@@ -121,24 +121,27 @@ def analyze(url, file_path, dir_path, domain, output, no_cache, verbose, model, 
     reporter = ReportGenerator(output_dir=output)
     use_cache = not no_cache
 
+    success = False
+
     try:
         if url:
             content = fetcher.fetch_url(url)
-            run_pipeline(url, content, domain or "", reporter, console, use_cache, logger, model, chunk_delay, dry_run)
+            success = run_pipeline(url, content, domain or "", reporter, console, use_cache, logger, model, chunk_delay, dry_run) is not None
 
         elif file_path:
             content = fetcher.fetch_file(file_path)
-            run_pipeline(file_path, content, domain or "", reporter, console, use_cache, logger, model, chunk_delay, dry_run)
+            success = run_pipeline(file_path, content, domain or "", reporter, console, use_cache, logger, model, chunk_delay, dry_run) is not None
 
         elif dir_path:
             files = fetcher.fetch_directory(dir_path)
             if not files:
                 console.print("[yellow]No JS files found in directory.[/yellow]")
-                return
+                raise SystemExit(1)
 
             console.print(f"[cyan]Found {len(files)} JS file(s). Starting batch analysis.[/cyan]")
             for rel_name, content in files.items():
-                run_pipeline(rel_name, content, domain or "", reporter, console, use_cache, logger, model, chunk_delay, dry_run)
+                if run_pipeline(rel_name, content, domain or "", reporter, console, use_cache, logger, model, chunk_delay, dry_run) is not None:
+                    success = True
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Aborted by user.[/yellow]")
@@ -146,6 +149,9 @@ def analyze(url, file_path, dir_path, domain, output, no_cache, verbose, model, 
         logger.error(f"Pipeline failed: {e}")
         if verbose:
             console.print_exception()
+
+    if not success:
+        raise SystemExit(1)
 
 
 @cli.command("clear-cache")

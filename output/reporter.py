@@ -216,12 +216,12 @@ class ReportGenerator:
                     f"| {ev} |"
                 )
 
-        path = self.output_dir / (self._slugify(source_name) + ".md")
+        path = self.output_dir / (self._slugify(Path(source_name).name) + ".md")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return str(path)
 
     def _save_json(self, results: dict, source_name: str) -> str:
-        path = self.output_dir / (self._slugify(source_name) + ".json")
+        path = self.output_dir / (self._slugify(Path(source_name).name) + ".json")
         path.write_text(
             json.dumps(results, indent=2, ensure_ascii=False),
             encoding="utf-8",

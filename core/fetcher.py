@@ -29,46 +29,32 @@ class JSFetcher:
 
     def fetch_url(self, url: str) -> str:
         if not url.startswith(("http://", "https://")):
-            err = ValueError(f"Invalid URL scheme: {url!r} — must start with http:// or https://")
-            logger.error(str(err))
-            raise err
+            raise ValueError(f"Invalid URL scheme: {url!r} — must start with http:// or https://")
 
         try:
             response = httpx.get(url, headers=self._get_random_headers(), timeout=self.timeout, follow_redirects=True)
         except httpx.TimeoutException:
-            msg = f"Request timed out for {url}"
-            logger.error(msg)
-            raise ValueError(msg)
+            raise ValueError(f"Request timed out for {url}")
         except httpx.SSLError:
-            msg = f"SSL error for {url}, try --no-verify flag"
-            logger.error(msg)
-            raise ValueError(msg)
+            raise ValueError(f"SSL error for {url}")
         except httpx.RequestError as e:
-            msg = f"Network error: {e}"
-            logger.error(msg)
-            raise ValueError(msg)
+            raise ValueError(f"Network error: {e}")
 
         if not response.is_success:
-            msg = f"HTTP {response.status_code} for {url}"
-            logger.error(msg)
-            raise ValueError(msg)
+            raise ValueError(f"HTTP {response.status_code} for {url}")
 
         return response.text
 
     def fetch_file(self, path: str) -> str:
         p = Path(path)
         if not p.exists():
-            err = FileNotFoundError(f"File not found: {path!r}")
-            logger.error(str(err))
-            raise err
+            raise FileNotFoundError(f"File not found: {path!r}")
         return p.read_text(encoding="utf-8")
 
     def fetch_directory(self, dir_path: str) -> dict[str, str]:
         d = Path(dir_path)
         if not d.is_dir():
-            err = NotADirectoryError(f"Not a directory: {dir_path!r}")
-            logger.error(str(err))
-            raise err
+            raise NotADirectoryError(f"Not a directory: {dir_path!r}")
 
         js_files = list(d.rglob("*.js"))
         logger.info(f"Found {len(js_files)} JS file(s) in {dir_path!r}")
