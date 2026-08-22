@@ -2,13 +2,31 @@
 
 import copy
 import json
+import os
 import random
 import time
 import anthropic
 from anthropic import APIConnectionError, APIError, APIStatusError, RateLimitError
+from google import genai
+from google.genai import types as genai_types
+from google.genai import errors as genai_errors
 
 from core.cache import analysis_cache
 from utils.logger import logger
+
+# AI_PROVIDER selects which backend to call. Defaults to "gemini" (free tier).
+# Set AI_PROVIDER=anthropic to switch back to the paid Claude models.
+_DEFAULT_MODELS = {"gemini": "gemini-2.5-flash", "anthropic": "claude-sonnet-4-6"}
+
+_PROVIDER = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
+if _PROVIDER not in _DEFAULT_MODELS:
+    raise ValueError(
+        f"Invalid AI_PROVIDER={_PROVIDER!r}. Valid options: {', '.join(sorted(_DEFAULT_MODELS))}."
+    )
+
+# Bump this whenever _SYSTEM_PROMPT or _OUTPUT_SCHEMA changes, so cached
+# results from an older prompt version are never served under a new one.
+_PROMPT_VERSION = "v1"
 
 # Stable portion of the prompt — cached on first call.
 # The variable sections (target domain, JS code) are injected per-request via the user message.
@@ -211,16 +229,25 @@ _MOCK_RESPONSE = {
 
 class JSAnalyzer:
 
-    def __init__(self, model: str = "claude-sonnet-4-6"):  # noqa: keep in sync with main.py default
-        self.client = anthropic.Anthropic()
-        self.model = model
+    def __init__(self, model: str | None = None):  # noqa: keep in sync with main.py default
+        self.provider = _PROVIDER
+        self.model = model or _DEFAULT_MODELS.get(self.provider, _DEFAULT_MODELS["gemini"])
+        if self.provider == "anthropic":
+            self.client = anthropic.Anthropic()
+        else:
+            self.client = genai.Client()
 
     def _call_with_retry(self, **kwargs):
-        """Wrap messages.create() with exponential backoff and jitter.
+        """Wrap the provider's create call with exponential backoff and jitter.
 
         Retries on rate limits, connection errors, and 5xx server errors.
         Non-retryable errors (4xx except 429, auth failures) are re-raised immediately.
         """
+        if self.provider == "anthropic":
+            return self._call_anthropic_with_retry(**kwargs)
+        return self._call_gemini_with_retry(**kwargs)
+
+    def _call_anthropic_with_retry(self, **kwargs):
         last_exc: Exception | None = None
 
         for attempt in range(_MAX_RETRIES + 1):
@@ -250,8 +277,33 @@ class JSAnalyzer:
 
         raise last_exc
 
+    def _call_gemini_with_retry(self, *, model, contents, config):
+        last_exc: Exception | None = None
+
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                return self.client.models.generate_content(model=model, contents=contents, config=config)
+            except genai_errors.ServerError as e:
+                last_exc = e
+            except genai_errors.ClientError as e:
+                if e.code == 429:
+                    last_exc = e
+                else:
+                    # 4xx errors other than 429 are caller bugs — don't retry.
+                    raise
+
+            if attempt < _MAX_RETRIES:
+                delay = min(_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1), _MAX_DELAY)
+                logger.warning(
+                    f"API call failed (attempt {attempt + 1}/{_MAX_RETRIES + 1}): "
+                    f"{last_exc!r}. Retrying in {delay:.1f}s..."
+                )
+                time.sleep(delay)
+
+        raise last_exc
+
     def analyze(self, content: str, target_domain: str = "", use_cache: bool = True, dry_run: bool = False) -> dict:
-        """Send JS content to Claude and return parsed findings as a dict.
+        """Send JS content to the configured AI provider and return parsed findings as a dict.
 
         Args:
             content: Raw (or pre-beautified) JavaScript source.
@@ -264,7 +316,7 @@ class JSAnalyzer:
             return copy.deepcopy(_MOCK_RESPONSE)
 
         if use_cache:
-            cached = analysis_cache.get(content)
+            cached = analysis_cache.get(content, self.provider, self.model, _PROMPT_VERSION)
             if cached:
                 return cached
 
@@ -274,45 +326,74 @@ class JSAnalyzer:
             f"## JS CODE\n{content}"
         )
 
-        logger.debug(f"Sending {len(content):,} chars to {self.model} for analysis.")
+        logger.debug(f"Sending {len(content):,} chars to {self.model} ({self.provider}) for analysis.")
 
-        response = self._call_with_retry(
-            model=self.model,
-            max_tokens=16384,
-            system=[
-                {
-                    "type": "text",
-                    "text": _SYSTEM_PROMPT,
-                    # Cache the stable system prompt so repeated calls only pay for
-                    # the JS code tokens, not the full instruction block.
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            output_config={
-                "format": {
-                    "type": "json_schema",
-                    "schema": _OUTPUT_SCHEMA,
-                }
-            },
-            messages=[{"role": "user", "content": user_message}],
-        )
-
-        if response.stop_reason == "refusal":
-            raise ValueError("Claude refused the request. Content may violate usage policies.")
-
-        if response.stop_reason == "max_tokens":
-            raise ValueError(
-                "Response was truncated (hit max_tokens limit). "
-                "The JS file may be too complex for a single analysis — consider chunking."
+        if self.provider == "anthropic":
+            response = self._call_with_retry(
+                model=self.model,
+                max_tokens=16384,
+                system=[
+                    {
+                        "type": "text",
+                        "text": _SYSTEM_PROMPT,
+                        # Cache the stable system prompt so repeated calls only pay for
+                        # the JS code tokens, not the full instruction block.
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                output_config={
+                    "format": {
+                        "type": "json_schema",
+                        "schema": _OUTPUT_SCHEMA,
+                    }
+                },
+                messages=[{"role": "user", "content": user_message}],
             )
 
-        if response.stop_reason != "end_turn":
-            logger.warning(f"Unexpected stop_reason: {response.stop_reason}")
+            if response.stop_reason == "refusal":
+                raise ValueError("Claude refused the request. Content may violate usage policies.")
 
-        text_blocks = [b.text for b in response.content if b.type == "text"]
-        if not text_blocks:
-            raise ValueError("API response contained no text blocks.")
-        text = text_blocks[0]
+            if response.stop_reason == "max_tokens":
+                raise ValueError(
+                    "Response was truncated (hit max_tokens limit). "
+                    "The JS file may be too complex for a single analysis — consider chunking."
+                )
+
+            if response.stop_reason != "end_turn":
+                logger.warning(f"Unexpected stop_reason: {response.stop_reason}")
+
+            text_blocks = [b.text for b in response.content if b.type == "text"]
+            if not text_blocks:
+                raise ValueError("API response contained no text blocks.")
+            text = text_blocks[0]
+        else:
+            response = self._call_with_retry(
+                model=self.model,
+                contents=user_message,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=_SYSTEM_PROMPT,
+                    max_output_tokens=16384,
+                    response_mime_type="application/json",
+                    response_json_schema=_OUTPUT_SCHEMA,
+                ),
+            )
+
+            finish_reason = response.candidates[0].finish_reason if response.candidates else None
+            if finish_reason == genai_types.FinishReason.SAFETY:
+                raise ValueError("Gemini refused the request. Content may violate usage policies.")
+
+            if finish_reason == genai_types.FinishReason.MAX_TOKENS:
+                raise ValueError(
+                    "Response was truncated (hit max_tokens limit). "
+                    "The JS file may be too complex for a single analysis — consider chunking."
+                )
+
+            if finish_reason != genai_types.FinishReason.STOP:
+                logger.warning(f"Unexpected finish_reason: {finish_reason}")
+
+            text = response.text
+            if not text:
+                raise ValueError("API response contained no text.")
 
         try:
             result: dict = json.loads(text)
@@ -325,12 +406,13 @@ class JSAnalyzer:
         severity = result.get("analysis_summary", {}).get("highest_severity", "?")
         logger.info(f"Analysis complete — {total} finding(s), highest severity: {severity}")
 
-        cache_read = getattr(response.usage, "cache_read_input_tokens", 0)
-        if cache_read:
-            logger.debug(f"Prompt cache hit: {cache_read:,} tokens served from cache.")
+        if self.provider == "anthropic":
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0)
+            if cache_read:
+                logger.debug(f"Prompt cache hit: {cache_read:,} tokens served from cache.")
 
         if use_cache:
-            analysis_cache.set(content, result)
+            analysis_cache.set(content, self.provider, self.model, _PROMPT_VERSION, result)
 
         return result
 

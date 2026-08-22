@@ -50,7 +50,7 @@ def run_pipeline(
     console: Console,
     use_cache: bool,
     logger,
-    model: str = "claude-sonnet-4-6",
+    model: str | None = None,
     chunk_delay: int = 5,
     dry_run: bool = False,
 ) -> dict | None:
@@ -106,7 +106,7 @@ def cli():
 @click.option("--output", "-o", default="./reports", show_default=True, help="Output directory for reports.")
 @click.option("--no-cache", is_flag=True, default=False, help="Disable caching.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Verbose logging.")
-@click.option("--model", "-m", default="claude-sonnet-4-6", show_default=True, help="Anthropic model to use (default: claude-sonnet-4-6).")
+@click.option("--model", "-m", default=None, help="Model to use. Defaults per AI_PROVIDER (gemini-2.5-flash, or claude-sonnet-4-6 when AI_PROVIDER=anthropic).")
 @click.option("--chunk-delay", default=5, type=int, show_default=True, help="Seconds to wait between chunk API calls (default: 5).")
 @click.option("--dry-run", is_flag=True, default=False, help="Run the full pipeline without calling the AI API. Uses a mock response to test fetch/chunk/merge/report.")
 def analyze(url, file_path, dir_path, domain, output, no_cache, verbose, model, chunk_delay, dry_run):

@@ -13,11 +13,11 @@ class AnalysisCache:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_key(self, content: str) -> str:
-        return hashlib.sha256(content.encode()).hexdigest()
+    def get_key(self, content: str, provider: str, model: str, prompt_version: str) -> str:
+        return hashlib.sha256(f"{provider}:{model}:{prompt_version}:{content}".encode()).hexdigest()
 
-    def get(self, content: str) -> dict | None:
-        key = self.get_key(content)
+    def get(self, content: str, provider: str, model: str, prompt_version: str) -> dict | None:
+        key = self.get_key(content, provider, model, prompt_version)
         path = self.cache_dir / f"{key}.json"
         if not path.exists():
             return None
@@ -28,8 +28,8 @@ class AnalysisCache:
         except json.JSONDecodeError:
             return None
 
-    def set(self, content: str, result: dict) -> None:
-        key = self.get_key(content)
+    def set(self, content: str, provider: str, model: str, prompt_version: str, result: dict) -> None:
+        key = self.get_key(content, provider, model, prompt_version)
         path = self.cache_dir / f"{key}.json"
         path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         logger.debug(f"Cache saved: {key[:12]}...")

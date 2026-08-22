@@ -163,8 +163,13 @@ class ResultMerger:
             sev = finding.get("severity", "none")
             if _SEVERITY_RANK.get(sev, 0) > _SEVERITY_RANK.get(highest, 0):
                 highest = sev
-            if highest == "critical":
-                break  # Can't go higher.
+
+        # secrets/endpoints carry no per-item severity in the schema — floor the
+        # summary so a real finding never rounds down to "none".
+        if merged["secrets"] and _SEVERITY_RANK.get(highest, 0) < _SEVERITY_RANK["high"]:
+            highest = "high"
+        if merged["endpoints"] and _SEVERITY_RANK.get(highest, 0) < _SEVERITY_RANK["low"]:
+            highest = "low"
 
         merged["analysis_summary"] = {
             "total_findings": total,
