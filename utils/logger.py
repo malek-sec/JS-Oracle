@@ -6,12 +6,16 @@ from rich.logging import RichHandler
 
 def get_logger(name: str, verbose: bool = False) -> logging.Logger:
     log = logging.getLogger(name)
+    level = logging.DEBUG if verbose else logging.INFO
 
-    # Avoid adding duplicate handlers if called multiple times
+    # Avoid adding duplicate handlers if called multiple times, but still
+    # apply the requested level — a later verbose=True call must take effect.
     if log.handlers:
+        log.setLevel(level)
+        for h in log.handlers:
+            h.setLevel(level)
         return log
 
-    level = logging.DEBUG if verbose else logging.INFO
     log.setLevel(level)
 
     handler = RichHandler(

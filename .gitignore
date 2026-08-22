@@ -1,8 +1,45 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
 .venv/
 venv/
-__pycache__/
-*.pyc
-.env
+env/
+
+# Runtime artefacts
 .cache/
 reports/
-*.egg-info/
+*.db
+*.sqlite3
+*.log
+
+# Study / teaching copies — never part of the shipped source
+Study_Lab/
+
+# Local agent + editor config
+.claude/
+.vscode/
+.idea/
+
+# Binary artefacts
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.so
+
+# OS noise
+.DS_Store
+Thumbs.db
