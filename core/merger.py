@@ -7,6 +7,11 @@ from utils.logger import logger
 _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
 _SEVERITY_RANK = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1, "none": 0}
 
+# Secret types that are genuinely serious on their own (a leaked credential).
+# Everything else (internal_ip, other) is informational until proven otherwise,
+# so it must not inflate the report's headline severity.
+_CREDENTIAL_TYPES = {"api_key", "aws_key", "jwt", "token"}
+
 _EMPTY_RESULT = {
     "analysis_summary": {"total_findings": 0, "highest_severity": "none"},
     "endpoints": [],
@@ -182,9 +187,14 @@ class ResultMerger:
                 highest = sev
 
         # secrets/endpoints carry no per-item severity in the schema — floor the
-        # summary so a real finding never rounds down to "none".
-        if merged["secrets"] and _SEVERITY_RANK.get(highest, 0) < _SEVERITY_RANK["high"]:
+        # summary by kind so a real finding never rounds down to "none", but a
+        # benign private IP never inflates the headline to "high".
+        has_credential = any(s.get("type") in _CREDENTIAL_TYPES for s in merged["secrets"])
+        if has_credential and _SEVERITY_RANK.get(highest, 0) < _SEVERITY_RANK["high"]:
             highest = "high"
+        elif merged["secrets"] and _SEVERITY_RANK.get(highest, 0) < _SEVERITY_RANK["low"]:
+            # internal_ip / other — worth noting, but only low on its own.
+            highest = "low"
         if merged["endpoints"] and _SEVERITY_RANK.get(highest, 0) < _SEVERITY_RANK["low"]:
             highest = "low"
 

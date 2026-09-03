@@ -42,12 +42,21 @@ def test_merge_prefers_known_method_over_unknown():
     assert merged["endpoints"][0]["method"] == "POST"
 
 
-def test_summary_floors_severity_for_secrets():
+def test_summary_floors_credentials_to_high():
     m = ResultMerger()
     merged = m.merge([_wrap(secrets=[{"type": "api_key", "value_preview": "x", "evidence": "e"}])])
-    # A secret with no per-item severity must not round down to "none".
+    # A real leaked credential is high.
     assert merged["analysis_summary"]["highest_severity"] == "high"
     assert merged["analysis_summary"]["total_findings"] == 1
+
+
+def test_summary_internal_ip_is_low_not_high():
+    m = ResultMerger()
+    merged = m.merge([_wrap(secrets=[
+        {"type": "internal_ip", "value_preview": "192.168.***", "evidence": "192.168.1.100"},
+    ])])
+    # A private IP alone must not inflate the headline severity to high.
+    assert merged["analysis_summary"]["highest_severity"] == "low"
 
 
 def test_filter_third_party_keeps_relative_and_subdomains_drops_others():
