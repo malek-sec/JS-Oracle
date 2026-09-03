@@ -1,8 +1,11 @@
-"""Tests for CLI helper parsing (headers, URL lists)."""
+"""Tests for CLI helpers and the offline-only pipeline."""
 
 import pytest
+from rich.console import Console
 
-from main import _parse_headers, _read_url_list
+from main import _parse_headers, _read_url_list, run_pipeline
+from output.reporter import ReportGenerator
+from utils.logger import get_logger
 
 
 def test_parse_headers_valid():
@@ -40,3 +43,18 @@ def test_read_url_list_missing_file_raises(tmp_path):
     import click
     with pytest.raises(click.UsageError):
         _read_url_list(str(tmp_path / "nope.txt"))
+
+
+def test_offline_only_pipeline_needs_no_api(tmp_path):
+    # --offline must run the deterministic scan and produce a report without ever
+    # constructing an AI client or needing a key.
+    reporter = ReportGenerator(output_dir=str(tmp_path))
+    logger = get_logger("test-offline", verbose=False)
+    content = 'var ip = "10.0.0.5";\n//# sourceMappingURL=app.js.map\n'
+    merged = run_pipeline(
+        "app.js", content, "", reporter, Console(),
+        use_cache=False, logger=logger, offline_only=True,
+    )
+    assert merged is not None
+    assert merged["analysis_summary"]["total_findings"] >= 2  # source map + internal IP
+    assert any(s["type"] == "internal_ip" for s in merged["secrets"])

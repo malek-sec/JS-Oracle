@@ -109,6 +109,8 @@ js-oracle clear-cache
 | `--domain` | Target domain — drops third-party endpoints |
 | `--output, -o` | Report output dir (default `./reports`) |
 | `--html` | Also write HTML per source + a batch `index.html` |
+| `--offline` | Deterministic scan only — **no AI call, no key, no cost** |
+| `--skip-libs` | Skip known JS libraries (jquery, bootstrap, gsap, …) |
 | `--regex-endpoints` | Add an offline LinkFinder-style endpoint sweep (noisier) |
 | `--concurrency, -c` | Analyze N sources in parallel (default 1) |
 | `--proxy` | Route URL fetches through a proxy (e.g. Burp) |
@@ -121,6 +123,27 @@ js-oracle clear-cache
 | `--verbose, -v` | Debug logging + full tracebacks |
 
 Top-level: `js-oracle --version`, `js-oracle clear-cache`.
+
+## Controlling cost
+
+Minified bundles are token-heavy and the default model (Opus) is premium, so a
+large batch can add up fast. Recommended workflow:
+
+```bash
+# 1) FREE triage — deterministic scan, no AI, over the whole list
+js-oracle analyze --url-list all_js.txt --offline --skip-libs --domain target.com
+
+# 2) Bulk AI pass on the free Gemini tier (set AI_PROVIDER=gemini in .env),
+#    skipping vendor libraries
+js-oracle analyze --url-list all_js.txt --skip-libs -c 5 --domain target.com
+
+# 3) Deep pass with Opus on just the few interesting custom files
+js-oracle analyze -u https://target.com/assets/app.js --domain target.com
+```
+
+Levers: `--offline` (zero cost), `--skip-libs` (drop vendor code), `AI_PROVIDER=gemini`
+(free tier), `--model claude-haiku-4-5` (~5× cheaper than Opus), `ANTHROPIC_EFFORT=low`,
+and the built-in cache (re-running identical content never re-charges).
 
 ## Output
 
