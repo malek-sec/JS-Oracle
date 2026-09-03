@@ -79,6 +79,22 @@ def test_filter_third_party_is_case_insensitive():
     assert len(filtered["endpoints"]) == 1
 
 
+def test_filter_third_party_accepts_full_url_as_domain():
+    m = ResultMerger()
+    results = _wrap(endpoints=[
+        {"path": "https://eservices.example.sa/api/v1", "method": "GET", "parameters": [],
+         "body_structure": None, "evidence": "", "confidence": "high"},
+        {"path": "https://api.eservices.example.sa/x", "method": "GET", "parameters": [],
+         "body_structure": None, "evidence": "", "confidence": "high"},
+        {"path": "https://cdn.other.net/x.js", "method": "GET", "parameters": [],
+         "body_structure": None, "evidence": "", "confidence": "high"},
+    ])
+    # A full URL passed as --domain is normalized to its hostname (eservices.example.sa).
+    filtered = m.filter_third_party(results, "https://eservices.example.sa/portal/")
+    kept = {ep["path"] for ep in filtered["endpoints"]}
+    assert kept == {"https://eservices.example.sa/api/v1", "https://api.eservices.example.sa/x"}
+
+
 def test_filter_third_party_empty_target_is_noop():
     m = ResultMerger()
     results = _wrap(endpoints=[
