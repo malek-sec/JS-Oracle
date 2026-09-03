@@ -1,6 +1,13 @@
-anthropic>=0.25.0
-google-genai>=1.0.0
-requests>=2.31.0
+# Runtime dependencies for js-oracle — the default Claude (anthropic) provider.
+# Gemini is OPTIONAL: install it only if you set AI_PROVIDER=gemini —
+#   pip install google-genai        (or:  pip install .[gemini])
+#
+# Packaged install alternative (also gives the `js-oracle` command):
+#   pip install .            # same dependency set as this file
+#   pip install .[gemini]    # add the Gemini provider
+#   pip install .[dev]       # add test/lint tooling
+
+anthropic>=0.96,<1.0       # Claude provider (default). <1.0: the 1.x SDK is a breaking rewrite.
 jsbeautifier>=1.15.1
 rich>=13.7.0
 click>=8.1.7

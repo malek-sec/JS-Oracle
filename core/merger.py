@@ -59,47 +59,64 @@ class ResultMerger:
         return self._recalculate_summary(merged)
 
     def _dedupe_endpoints(self, items: list[dict]) -> list[dict]:
-        """Deduplicate endpoints by (path, method), merging metadata on collision."""
+        """Deduplicate endpoints by (path, method), merging metadata on collision.
+
+        UNKNOWN acts as a wildcard method: a ``(path, UNKNOWN)`` finding and a
+        concrete ``(path, POST)`` finding describe the same endpoint and are
+        collapsed into the concrete one, regardless of the order they arrive in.
+        Distinct concrete methods for the same path (GET vs POST) stay separate.
+        """
         seen: dict[tuple, dict] = {}
 
-        for item in items:
-            key = (item.get("path", ""), item.get("method", "UNKNOWN"))
-
-            if key not in seen:
-                # Store a shallow copy so we never mutate the original.
-                seen[key] = dict(item)
-                seen[key]["parameters"] = list(item.get("parameters") or [])
-                continue
-
-            existing = seen[key]
-
-            # Prefer a known HTTP method over UNKNOWN.
-            if existing.get("method") == "UNKNOWN" and item.get("method") != "UNKNOWN":
-                existing["method"] = item["method"]
-                # Update key to the more specific method.
-                del seen[key]
-                new_key = (existing["path"], existing["method"])
-                seen[new_key] = existing
-                key = new_key
-
+        def _merge_into(existing: dict, item: dict) -> None:
             # Union parameters, preserving insertion order.
             current_params = existing["parameters"]
             for p in item.get("parameters") or []:
                 if p not in current_params:
                     current_params.append(p)
-
             # Keep higher confidence.
             if _CONFIDENCE_RANK.get(item.get("confidence", "low"), 0) > \
                _CONFIDENCE_RANK.get(existing.get("confidence", "low"), 0):
-                existing["confidence"] = item["confidence"]
-
+                existing["confidence"] = item.get("confidence", existing.get("confidence"))
             # Keep longer evidence string (more context is better).
             if len(item.get("evidence", "")) > len(existing.get("evidence", "")):
                 existing["evidence"] = item["evidence"]
-
             # Keep first non-null body_structure.
             if existing.get("body_structure") is None and item.get("body_structure") is not None:
                 existing["body_structure"] = item["body_structure"]
+
+        def _fresh(item: dict) -> dict:
+            copy_ = dict(item)
+            copy_["parameters"] = list(item.get("parameters") or [])
+            return copy_
+
+        for item in items:
+            path = item.get("path", "")
+            method = item.get("method", "UNKNOWN")
+            key = (path, method)
+
+            if key in seen:
+                _merge_into(seen[key], item)
+                continue
+
+            if method != "UNKNOWN":
+                # Upgrade a pending UNKNOWN entry for this path to the concrete method.
+                unknown_key = (path, "UNKNOWN")
+                if unknown_key in seen:
+                    existing = seen.pop(unknown_key)
+                    existing["method"] = method
+                    _merge_into(existing, item)
+                    seen[key] = existing
+                else:
+                    seen[key] = _fresh(item)
+                continue
+
+            # method == UNKNOWN: fold into an existing concrete entry for this path.
+            concrete = next((k for k in seen if k[0] == path and k[1] != "UNKNOWN"), None)
+            if concrete is not None:
+                _merge_into(seen[concrete], item)
+            else:
+                seen[key] = _fresh(item)
 
         return list(seen.values())
 
@@ -182,17 +199,24 @@ class ResultMerger:
     def filter_third_party(self, results: dict, target_domain: str) -> dict:
         """Remove endpoints that are absolute URLs pointing to a different domain.
 
-        Relative paths (starting with /) are always kept. Only absolute URLs
-        whose hostname does not contain target_domain are filtered out.
+        Relative paths (starting with /) are always kept. An absolute URL is
+        kept only when its hostname is the target domain or a subdomain of it —
+        matched case-insensitively on a label boundary, so ``example.com`` keeps
+        ``api.example.com`` but drops ``evil-example.com`` and ``example.com.evil.net``.
         """
+        target = (target_domain or "").strip().lower().rstrip(".")
+        if not target:
+            # No target specified — nothing to filter against.
+            return self._recalculate_summary({**results})
+
         before = len(results.get("endpoints", []))
 
         def keep(ep: dict) -> bool:
             path = ep.get("path", "")
             if not path.startswith(("http://", "https://")):
                 return True  # Relative path — always keep.
-            hostname = urllib.parse.urlparse(path).hostname or ""
-            return target_domain in hostname
+            hostname = (urllib.parse.urlparse(path).hostname or "").lower()
+            return hostname == target or hostname.endswith("." + target)
 
         filtered_endpoints = [ep for ep in results.get("endpoints", []) if keep(ep)]
         removed = before - len(filtered_endpoints)
