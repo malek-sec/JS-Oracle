@@ -1,6 +1,12 @@
 """Tests for the offline (no-API) pattern scans."""
 
-from core.patterns import find_endpoints, find_secrets, find_source_maps, offline_findings
+from core.patterns import (
+    find_endpoints,
+    find_secrets,
+    find_source_maps,
+    is_known_library,
+    offline_findings,
+)
 
 
 def test_find_source_maps_detects_both_comment_forms():
@@ -67,3 +73,15 @@ def test_offline_findings_endpoints_are_opt_in():
     js = 'x="/api/orders"; fetch("https://a.com/api/x");'
     assert offline_findings(js, include_endpoints=False)["endpoints"] == []
     assert len(offline_findings(js, include_endpoints=True)["endpoints"]) >= 1
+
+
+def test_is_known_library_matches_vendors_not_custom():
+    assert is_known_library("https://x.sa/Content/js/greensock-TweenMax.min.js") is True
+    assert is_known_library("https://x.sa/Scripts/jquery-3.5.1.min.js") is True
+    assert is_known_library("/wp-includes/js/dist/vendor/wp-polyfill.min.js") is True
+    assert is_known_library("bootstrap.min.js") is True
+    # Custom / app code must NOT be treated as a library.
+    assert is_known_library("https://x.sa/assets/login-913472c40d.js") is False
+    assert is_known_library("https://x.sa/Content/js/238-js-custom.js") is False
+    assert is_known_library("https://x.sa/assets/messages-4ed61d.js") is False
+    assert is_known_library("main.js") is False

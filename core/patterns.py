@@ -52,6 +52,31 @@ _EMPTY = {
     "suspicious_logic": [],
 }
 
+# Well-known third-party JS libraries — analyzing these with an LLM is wasted
+# spend (no custom logic to find). Matched against the file name only.
+_KNOWN_LIB_RE = re.compile(
+    r"(?:^|[/_-])(?:"
+    r"jquery|jquery[.-]migrate|jquery[.-]ui|jquery[.-]validate|jquery[.-]blockui|"
+    r"bootstrap|popper|angular|react|react-dom|vue|lodash|underscore|moment|"
+    r"gsap|greensock|tweenmax|tweenlite|timelinemax|scrolltoplugin|scrollmagic|"
+    r"owl[.-]?carousel|slick|select2|selectwoo|swiper|aos|wow|parallax|"
+    r"fontawesome|font-awesome|modernizr|handlebars|mustache|d3|chart|"
+    r"easing|wp-polyfill|regenerator-runtime|zxcvbn|js[.-]cookie|"
+    r"hooks[.-]min|i18n[.-]min|dom-ready|hoverintent|imagesloaded|masonry"
+    r")(?:[.-]|$)",
+    re.IGNORECASE,
+)
+
+
+def is_known_library(name: str) -> bool:
+    """Heuristic: does this URL/filename look like a third-party JS library?
+
+    Matches the file name (last path segment, sans query) so a path directory
+    can't trigger a false positive. Intended for the opt-in ``--skip-libs``.
+    """
+    filename = (name or "").rsplit("/", 1)[-1].split("?", 1)[0]
+    return bool(_KNOWN_LIB_RE.search(filename))
+
 
 def _mask(value: str) -> str:
     """Mask a secret to a short, non-sensitive preview (mirrors the LLM convention)."""

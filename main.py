@@ -22,7 +22,7 @@ from core.fetcher import JSFetcher
 from core.preprocessor import preprocessor
 from core.analyzer import JSAnalyzer
 from core.merger import result_merger, _SEVERITY_RANK
-from core.patterns import offline_findings
+from core.patterns import is_known_library, offline_findings
 from core.cache import analysis_cache
 from output.reporter import ReportGenerator
 from utils.logger import get_logger
@@ -102,30 +102,34 @@ def run_pipeline(
     chunk_delay: int = 5,
     dry_run: bool = False,
     regex_endpoints: bool = False,
+    offline_only: bool = False,
 ) -> dict | None:
     """Run the full analysis pipeline for a single JS source.
 
     Returns the merged results dict, or None if the pipeline produced nothing.
+    When ``offline_only`` is set, the AI call is skipped entirely (no API key,
+    no cost) — only the deterministic offline scan runs.
     """
     logger.info(f"Analyzing: {source_name}")
 
-    js_analyzer = JSAnalyzer(model=model)
-
-    chunks = preprocessor.prepare(content)
-    logger.info(f"Preprocessing produced {len(chunks)} chunk(s) for '{source_name}'.")
-
     chunk_results = []
-    for idx, chunk in enumerate(chunks, start=1):
-        try:
-            result = js_analyzer.analyze(chunk, target_domain, use_cache, dry_run=dry_run)
-            chunk_results.append(result)
-        except Exception as e:
-            logger.error(f"Chunk {idx}/{len(chunks)} failed for '{source_name}': {e}")
+    if not offline_only:
+        js_analyzer = JSAnalyzer(model=model)
 
-        # Sleep between chunks to respect rate limits (skip after the last chunk).
-        if idx < len(chunks):
-            logger.debug(f"Waiting {chunk_delay}s between chunks (rate limit cooldown)...")
-            time.sleep(chunk_delay)
+        chunks = preprocessor.prepare(content)
+        logger.info(f"Preprocessing produced {len(chunks)} chunk(s) for '{source_name}'.")
+
+        for idx, chunk in enumerate(chunks, start=1):
+            try:
+                result = js_analyzer.analyze(chunk, target_domain, use_cache, dry_run=dry_run)
+                chunk_results.append(result)
+            except Exception as e:
+                logger.error(f"Chunk {idx}/{len(chunks)} failed for '{source_name}': {e}")
+
+            # Sleep between chunks to respect rate limits (skip after the last chunk).
+            if idx < len(chunks):
+                logger.debug(f"Waiting {chunk_delay}s between chunks (rate limit cooldown)...")
+                time.sleep(chunk_delay)
 
     # Offline, no-API pre-scan (source maps, secrets, optional endpoints). Merged
     # alongside the chunks so it is still reported even if every API call failed.
@@ -204,6 +208,8 @@ def cli():
 @click.option("--output", "-o", default="./reports", show_default=True, help="Output directory for reports.")
 @click.option("--html", "html_out", is_flag=True, default=False, help="Also write a styled HTML report per source, plus a batch index.html.")
 @click.option("--regex-endpoints", is_flag=True, default=False, help="Add an offline LinkFinder-style endpoint/URL sweep (noisier, deterministic).")
+@click.option("--offline", "offline_only", is_flag=True, default=False, help="Deterministic scan only — no AI call, no API key, no cost. Great for a free first-pass triage.")
+@click.option("--skip-libs", is_flag=True, default=False, help="Skip well-known JS libraries (jquery, bootstrap, gsap, ...) — don't waste AI spend on vendor code.")
 @click.option("--concurrency", "-c", default=1, type=int, show_default=True, help="Analyze this many sources in parallel (best with URL lists / --dir).")
 @click.option("--proxy", default=None, help="Route URL fetches through a proxy, e.g. http://127.0.0.1:8080 (Burp).")
 @click.option("--insecure", is_flag=True, default=False, help="Skip TLS certificate verification when fetching URLs.")
@@ -214,7 +220,8 @@ def cli():
 @click.option("--chunk-delay", default=5, type=int, show_default=True, help="Seconds to wait between chunk API calls.")
 @click.option("--dry-run", is_flag=True, default=False, help="Run the full pipeline without calling the AI API (mock response) to test fetch/chunk/merge/report.")
 def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_endpoints,
-            concurrency, proxy, insecure, headers, no_cache, verbose, model, chunk_delay, dry_run):
+            offline_only, skip_libs, concurrency, proxy, insecure, headers, no_cache,
+            verbose, model, chunk_delay, dry_run):
     """Analyze JavaScript files for secrets, endpoints, and vulnerabilities."""
     urls = list(url)
     if url_list:
@@ -229,6 +236,12 @@ def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_
 
     logger = get_logger("js-oracle", verbose=verbose)
     console = Console()
+
+    if skip_libs and urls:
+        before = len(urls)
+        urls = [u for u in urls if not is_known_library(u)]
+        if before - len(urls):
+            logger.info(f"--skip-libs: skipped {before - len(urls)} known-library URL(s).")
 
     try:
         header_map = _parse_headers(headers)
@@ -246,7 +259,7 @@ def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_
         try:
             merged = run_pipeline(
                 source_name, content, target, reporter, console,
-                use_cache, logger, model, chunk_delay, dry_run, regex_endpoints,
+                use_cache, logger, model, chunk_delay, dry_run, regex_endpoints, offline_only,
             )
             return (source_name, merged)
         except Exception as e:
@@ -281,6 +294,8 @@ def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_
         except Exception as e:
             logger.error(f"Failed to read directory '{dir_path}': {e}")
             files = {}
+        if skip_libs:
+            files = {rel: c for rel, c in files.items() if not is_known_library(rel)}
         if not files:
             console.print("[yellow]No JS files found in directory.[/yellow]")
         else:
@@ -289,6 +304,14 @@ def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_
 
     if not tasks:
         raise SystemExit(1)
+
+    # Nudge on spend before a large AI batch (minified bundles are token-heavy).
+    if not (offline_only or dry_run) and len(tasks) >= 15:
+        console.print(
+            f"[yellow]Heads-up: sending {len(tasks)} source(s) to the AI. Minified bundles are "
+            f"token-heavy — for a cheaper run consider --offline (free triage), --skip-libs, "
+            f"AI_PROVIDER=gemini (free tier), or --model claude-haiku-4-5.[/yellow]"
+        )
 
     results: list[tuple[str, dict]] = []
     try:
