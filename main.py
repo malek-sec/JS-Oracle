@@ -219,6 +219,8 @@ def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_
     urls = list(url)
     if url_list:
         urls.extend(_read_url_list(url_list))
+    # De-duplicate while preserving order — recon URL lists are full of repeats.
+    urls = list(dict.fromkeys(urls))
 
     if not (urls or file_path or dir_path):
         raise click.UsageError("Provide at least one of --url/--url-list, --file, or --dir.")
