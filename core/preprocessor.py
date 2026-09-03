@@ -29,7 +29,13 @@ class JSPreprocessor:
     def beautify(self, content: str) -> str:
         if self.is_minified(content):
             logger.debug("Minified JS detected — running beautifier.")
-            return jsbeautifier.beautify(content, self.opts)
+            try:
+                return jsbeautifier.beautify(content, self.opts)
+            except Exception as e:
+                # Beautify is a readability nicety, not a hard requirement —
+                # never let malformed input abort analysis over it.
+                logger.warning(f"Beautifier failed ({e}); analyzing raw content.")
+                return content
         logger.debug("JS does not appear minified — skipping beautifier.")
         return content
 
