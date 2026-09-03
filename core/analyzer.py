@@ -278,7 +278,12 @@ class JSAnalyzer:
             if self.provider == "anthropic":
                 # max_retries=0: we run our own unified backoff below, so the
                 # SDK's built-in retries would otherwise compound (5 x 3 tries).
-                self.client = anthropic.Anthropic(max_retries=0)
+                client_kwargs = {"max_retries": 0}
+                # Identity-linked API keys must name the workspace on each request.
+                workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+                if workspace_id:
+                    client_kwargs["default_headers"] = {"anthropic-workspace-id": workspace_id}
+                self.client = anthropic.Anthropic(**client_kwargs)
             else:
                 self.client = genai.Client()
         except Exception as e:
@@ -323,6 +328,14 @@ class JSAnalyzer:
                 if e.status_code >= 500:
                     last_exc = e
                 else:
+                    detail = str(getattr(e, "message", "") or e)
+                    if "anthropic-workspace-id" in detail:
+                        raise RuntimeError(
+                            "This ANTHROPIC_API_KEY is identity-linked and needs a workspace id. "
+                            "Set ANTHROPIC_WORKSPACE_ID in your .env (find it in the Anthropic "
+                            "Console under Settings > Workspaces, or in the console URL), or use "
+                            "a standard workspace-scoped API key."
+                        ) from e
                     raise
 
             if attempt < _MAX_RETRIES:
