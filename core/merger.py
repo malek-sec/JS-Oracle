@@ -204,10 +204,14 @@ class ResultMerger:
         matched case-insensitively on a label boundary, so ``example.com`` keeps
         ``api.example.com`` but drops ``evil-example.com`` and ``example.com.evil.net``.
         """
-        target = (target_domain or "").strip().lower().rstrip(".")
-        if not target:
+        raw = (target_domain or "").strip().lower()
+        if not raw:
             # No target specified — nothing to filter against.
             return self._recalculate_summary({**results})
+        # Be forgiving if a full URL (or host:port) is passed instead of a bare
+        # host: reduce "https://eservices.example.sa/x" -> "eservices.example.sa".
+        parsed = urllib.parse.urlparse(raw if "://" in raw else "//" + raw)
+        target = (parsed.hostname or raw).rstrip(".")
 
         before = len(results.get("endpoints", []))
 

@@ -82,10 +82,16 @@ class JSFetcher:
                 encoding = response.encoding or "utf-8"
         except httpx.TimeoutException:
             raise ValueError(f"Request timed out for {url}")
-        except httpx.SSLError:
-            raise ValueError(f"SSL error for {url}")
         except httpx.RequestError as e:
-            raise ValueError(f"Network error: {e}")
+            # httpx has no top-level SSLError; TLS/cert failures arrive here as
+            # ConnectError (a RequestError subclass). Surface a --insecure hint.
+            detail = str(e)
+            if "SSL" in detail.upper() or "CERTIFICATE" in detail.upper():
+                raise ValueError(
+                    f"TLS/certificate error for {url}: {e}. "
+                    f"If the cert is self-signed or invalid, retry with --insecure."
+                )
+            raise ValueError(f"Network error for {url}: {e}")
 
         return bytes(buf).decode(encoding, errors="replace")
 
