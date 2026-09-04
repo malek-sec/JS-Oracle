@@ -22,8 +22,16 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("aws_key", re.compile(r"A(?:KIA|SIA)[0-9A-Z]{16}")),                       # AWS access key id
     ("api_key", re.compile(r"AIza[0-9A-Za-z\-_]{35}")),                          # Google API key
     ("token",   re.compile(r"gh[pousr]_[0-9A-Za-z]{36,255}")),                   # GitHub token
+    ("token",   re.compile(r"glpat-[0-9A-Za-z_\-]{20}")),                        # GitLab PAT
+    ("token",   re.compile(r"npm_[0-9A-Za-z]{36}")),                             # npm token
     ("token",   re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,48}")),                  # Slack token
+    ("token",   re.compile(r"https://hooks\.slack\.com/services/"
+                           r"T[0-9A-Z]+/B[0-9A-Z]+/[0-9A-Za-z]+")),              # Slack webhook
     ("token",   re.compile(r"sk_live_[0-9a-zA-Z]{24,}")),                        # Stripe secret key
+    ("token",   re.compile(r"rk_live_[0-9a-zA-Z]{24,}")),                        # Stripe restricted key
+    ("api_key", re.compile(r"SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}")),      # SendGrid
+    ("api_key", re.compile(r"SK[0-9a-fA-F]{32}")),                               # Twilio API key SID
+    ("token",   re.compile(r"ya29\.[0-9A-Za-z\-_]{20,}")),                       # Google OAuth token
     ("jwt",     re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("other",   re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")),
 ]
@@ -59,7 +67,7 @@ _KNOWN_LIB_RE = re.compile(
     r"jquery|jquery[.-]migrate|jquery[.-]ui|jquery[.-]validate|jquery[.-]blockui|"
     r"bootstrap|popper|angular|react|react-dom|vue|lodash|underscore|moment|"
     r"gsap|greensock|tweenmax|tweenlite|timelinemax|scrolltoplugin|scrollmagic|"
-    r"owl[.-]?carousel|slick|select2|selectwoo|swiper|aos|wow|parallax|"
+    r"owl[.-]?carousel|slick|select2|selectwoo|fselect|swiper|aos|wow|parallax|isotope|waypoints|"
     r"fontawesome|font-awesome|modernizr|handlebars|mustache|d3|chart|"
     r"easing|wp-polyfill|regenerator-runtime|zxcvbn|js[.-]cookie|"
     r"hooks[.-]min|i18n[.-]min|dom-ready|hoverintent|imagesloaded|masonry"

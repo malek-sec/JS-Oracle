@@ -52,6 +52,24 @@ def test_find_secrets_detects_known_formats_and_masks():
     assert aws["value_preview"] != "AKIAIOSFODNN7EXAMPLE"
 
 
+def test_find_secrets_detects_expanded_formats_and_masks():
+    """GitLab / npm / SendGrid / Stripe-restricted / Twilio / Google-OAuth / Slack webhook."""
+    samples = [
+        "glpat-ABCDabcd1234EFGH5678",
+        "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+        "SG.abcdefghijklmnopqrstuv.abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+        "rk_live_abcdefghijklmnopqrstuvwx",
+        "SK0123456789abcdef0123456789abcdef",
+        "ya29.a0ARdEfGhIjKlMnOpQrStUvWx",
+        "https://hooks.slack.com/services/T00000000/B11111111/abcXYZ123",
+    ]
+    for sample in samples:
+        secrets = find_secrets(f'k = "{sample}";')
+        assert secrets, f"expanded secret not detected: {sample}"
+        # Never emit the raw secret value; only a masked preview.
+        assert all(s["value_preview"] != sample for s in secrets), sample
+
+
 def test_find_secrets_detects_jwt_and_dedupes():
     jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk"
     secrets = find_secrets(f"a='{jwt}'; b='{jwt}';")
