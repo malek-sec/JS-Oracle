@@ -274,7 +274,12 @@ class JSAnalyzer:
 
     def __init__(self, model: str | None = None):  # NB: default model kept in sync with main.py help
         self.provider = _PROVIDER
-        self.model = model or _DEFAULT_MODELS[self.provider]
+        # Model resolution: an explicit arg (CLI --model) wins; else, for the
+        # anthropic provider, the ANTHROPIC_MODEL env (e.g. claude-haiku-4-5 for a
+        # cheaper run); else the provider's built-in default.
+        env_model = (os.environ.get("ANTHROPIC_MODEL", "").strip()
+                     if self.provider == "anthropic" else "")
+        self.model = model or env_model or _DEFAULT_MODELS[self.provider]
         if self.provider == "gemini" and genai is None:
             raise RuntimeError(
                 "AI_PROVIDER=gemini requires the 'google-genai' package. "
