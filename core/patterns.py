@@ -67,7 +67,7 @@ _KNOWN_LIB_RE = re.compile(
     r"jquery|jquery[.-]migrate|jquery[.-]ui|jquery[.-]validate|jquery[.-]blockui|"
     r"bootstrap|popper|angular|react|react-dom|vue|lodash|underscore|moment|"
     r"gsap|greensock|tweenmax|tweenlite|timelinemax|scrolltoplugin|scrollmagic|"
-    r"owl[.-]?carousel|slick|select2|selectwoo|swiper|aos|wow|parallax|"
+    r"owl[.-]?carousel|slick|select2|selectwoo|fselect|swiper|aos|wow|parallax|isotope|waypoints|"
     r"fontawesome|font-awesome|modernizr|handlebars|mustache|d3|chart|"
     r"easing|wp-polyfill|regenerator-runtime|zxcvbn|js[.-]cookie|"
     r"hooks[.-]min|i18n[.-]min|dom-ready|hoverintent|imagesloaded|masonry"
