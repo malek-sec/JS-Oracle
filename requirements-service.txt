@@ -1,0 +1,7 @@
+# Optional extras — only needed to run js-oracle as an HTTP service (service.py).
+# The CLI and the deterministic offline scan do NOT require these.
+#   pip install -r requirements.txt -r requirements-service.txt
+#   uvicorn service:app --host 0.0.0.0 --port 8787
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2
