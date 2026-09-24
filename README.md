@@ -9,8 +9,9 @@ crawler or fetcher first.
 Analysis has two layers:
 
 - **Offline scan** (default, free, no API key) — deterministic regex passes for
-  secrets (AWS/Google/GitHub/Slack/Stripe keys, JWTs, private keys), internal
-  IPs, source-map leaks, and endpoints.
+  secrets (AWS, Google, GitHub, GitLab, npm, Slack, Twilio, SendGrid, Mailgun,
+  Stripe, Square, Anthropic, OpenAI, JWTs, private keys), internal IPs,
+  source-map leaks, and endpoints.
 - **AI scan** (optional) — sends each file to Claude (or Gemini) to extract
   endpoints, auth logic, and suspicious patterns that regex misses. Enabled
   automatically when an API key is configured.

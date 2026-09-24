@@ -85,3 +85,46 @@ def test_is_known_library_matches_vendors_not_custom():
     assert is_known_library("https://x.sa/Content/js/238-js-custom.js") is False
     assert is_known_library("https://x.sa/assets/messages-4ed61d.js") is False
     assert is_known_library("main.js") is False
+
+
+def test_find_secrets_detects_expanded_providers():
+    # High-confidence formats for common providers should each be flagged, with
+    # the correct type so severity calibration treats credentials as high.
+    samples = {
+        "token": [
+            "github_pat_" + "A" * 82,                       # GitHub fine-grained PAT
+            "glpat-" + "a" * 20,                            # GitLab PAT
+            "npm_" + "b" * 36,                              # npm token
+            "SK" + "0" * 32,                                # Twilio API key
+            "rk_live_" + "c" * 24,                          # Stripe restricted key
+            "sq0atp-" + "d" * 22,                           # Square token
+        ],
+        "api_key": [
+            "GOCSPX-" + "e" * 28,                           # Google OAuth client secret
+            "SG." + "f" * 22 + "." + "g" * 43,             # SendGrid
+            "key-" + "0123456789abcdef" * 2,               # Mailgun (32 hex)
+            "sk-ant-" + "h" * 30,                           # Anthropic
+            "sk-" + "i" * 40,                               # OpenAI
+        ],
+    }
+    for expected_type, values in samples.items():
+        for v in values:
+            secrets = find_secrets(f'const k = "{v}";')
+            assert any(s["type"] == expected_type for s in secrets), (
+                f"{v!r} not detected as {expected_type}: {secrets}"
+            )
+            # Never emit the raw secret in the preview.
+            assert all(s["value_preview"] != v for s in secrets)
+
+
+def test_find_secrets_detects_slack_webhook():
+    # Built from parts so the full literal never appears in source (keeps
+    # secret-scanning push protection from flagging this synthetic test value).
+    url = "https://hooks.slack.com/services/T" + "0" * 8 + "/B" + "1" * 8 + "/" + "z" * 24
+    secrets = find_secrets(f'const hook = "{url}";')
+    assert any(s["type"] == "token" for s in secrets)
+
+
+def test_find_secrets_no_false_positive_on_plain_text():
+    # Ordinary identifiers must not trip the new patterns.
+    assert find_secrets("const userId = 'sk-42'; let name = 'keyboard';") == []
