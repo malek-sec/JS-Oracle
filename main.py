@@ -160,7 +160,9 @@ def run_pipeline(
         )
 
     if not chunk_results:
-        logger.warning(f"Nothing to report for '{source_name}' (all analysis failed).")
+        # Empty means a clean file (no findings) — per-chunk failures, if any,
+        # are already logged as errors above, so this is not itself a failure.
+        logger.info(f"No findings for '{source_name}'.")
         return None
 
     merged = result_merger.merge(chunk_results)
@@ -561,14 +563,29 @@ def hunt(domain, list_path, depth, max_pages, include_subdomains, render, render
     if len(results) > 1:
         _print_batch_summary(console, results)
 
+    if results:
+        summary_meta = {
+            "target": domain or "",
+            "seeds": len(seeds),
+            "pages_crawled": discovery.pages_crawled,
+            "js_discovered": len(discovery.js_urls),
+            "inline_scripts": len(discovery.inline_scripts),
+            "offline_only": offline_only,
+        }
+        summary_path = reporter.save_run_summary(results, summary_meta)
+        console.print(f"[green]Run summary: {summary_path}[/green]")
+
     if html_out and results:
         index = reporter.save_batch_index(results)
         console.print(f"[green]Batch HTML index: {index}[/green]")
 
     console.print(f"[green]Recon artifacts saved under: {output}[/green]")
 
+    # Discovery already succeeded (we exit earlier when nothing is found), so a
+    # run that surfaced no findings is still a successful scan — exit 0 so the
+    # tool composes cleanly in automation. Reports/artifacts are on disk either way.
     if not results:
-        raise SystemExit(1)
+        console.print("[yellow]No findings in the analyzed sources (discovery artifacts still saved).[/yellow]")
 
 
 @cli.command("clear-cache")

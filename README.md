@@ -158,6 +158,8 @@ For each run, JS-Oracle writes to the output directory (default `./reports`):
 - `parameters.txt` — query-string parameter names seen during the crawl.
 - `<source>.json` and `<source>.md` — per-file findings (endpoints, secrets,
   auth logic, suspicious patterns).
+- `summary.json` — a single machine-readable rollup of the whole run, with a
+  cross-source **deduplicated** view of all findings (ideal for automation).
 - `index.html` — a browsable batch report, when `--html` is used.
 
 Findings are also printed to the terminal, ranked by severity.
