@@ -31,6 +31,8 @@ dependencies = [
 [project.optional-dependencies]
 # Gemini backend (AI_PROVIDER=gemini). Not needed for the default Claude provider.
 gemini = ["google-genai>=2.19,<3.0"]
+# Headless-browser rendering for SPA targets (the `hunt --render` option).
+browser = ["playwright>=1.40"]
 # Test/lint tooling.
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
