@@ -75,3 +75,25 @@ def test_batch_index_links_sources(tmp_path):
     doc = open(index, encoding="utf-8").read()
     assert "Batch Report" in doc
     assert ".html" in doc  # links to per-source reports
+
+
+def test_run_summary_aggregates_and_dedupes(tmp_path):
+    import json
+
+    rg = ReportGenerator(output_dir=str(tmp_path))
+    # Same endpoint appears in two sources — the aggregate must dedupe it to one.
+    ep = {"path": "/api/users", "method": "GET", "parameters": [],
+          "body_structure": None, "evidence": "fetch('/api/users')", "confidence": "high"}
+    src_a = {"analysis_summary": {"total_findings": 1, "highest_severity": "low"},
+             "endpoints": [dict(ep)], "secrets": [], "auth_logic": [], "suspicious_logic": []}
+    src_b = {"analysis_summary": {"total_findings": 1, "highest_severity": "low"},
+             "endpoints": [dict(ep)], "secrets": [], "auth_logic": [], "suspicious_logic": []}
+
+    path = rg.save_run_summary([("a.js", src_a), ("b.js", src_b)], {"target": "example.com"})
+    data = json.loads(open(path).read())
+
+    assert data["totals"]["sources"] == 2
+    assert data["totals"]["endpoints"] == 1          # deduped across sources
+    assert len(data["sources"]) == 2
+    assert data["meta"]["target"] == "example.com"
+    assert data["aggregate"]["endpoints"][0]["path"] == "/api/users"

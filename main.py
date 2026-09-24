@@ -19,6 +19,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from core.fetcher import JSFetcher
+from core.crawler import JSCrawler, build_seeds, _looks_like_js
+from core.renderer import BrowserRenderer, playwright_available
 from core.preprocessor import preprocessor
 from core.analyzer import JSAnalyzer
 from core.merger import result_merger, _SEVERITY_RANK
@@ -90,6 +92,20 @@ def _read_url_list(path: str) -> list[str]:
     return [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
 
 
+def _provider_key_present() -> bool:
+    """True if an API key for the configured AI_PROVIDER looks available.
+
+    Lets ``hunt`` fall back to a free offline-only scan (instead of erroring)
+    when the user has no key configured — keeping the tool useful out of the box.
+    """
+    import os
+
+    provider = os.environ.get("AI_PROVIDER", "anthropic").strip().lower()
+    if provider == "gemini":
+        return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
 def run_pipeline(
     source_name: str,
     content: str,
@@ -144,7 +160,9 @@ def run_pipeline(
         )
 
     if not chunk_results:
-        logger.warning(f"Nothing to report for '{source_name}' (all analysis failed).")
+        # Empty means a clean file (no findings) — per-chunk failures, if any,
+        # are already logged as errors above, so this is not itself a failure.
+        logger.info(f"No findings for '{source_name}'.")
         return None
 
     merged = result_merger.merge(chunk_results)
@@ -338,6 +356,236 @@ def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_
 
     if not results:
         raise SystemExit(1)
+
+
+@cli.command()
+@click.option("--domain", "-d", default=None, help="Target domain to crawl, e.g. example.com (discovers .js automatically).")
+@click.option("--list", "-l", "list_path", default=None, help="File of seed URLs (pages or .js), one per line ('-' reads stdin).")
+@click.option("--depth", default=2, type=int, show_default=True, help="Crawl depth for link-following (0 = only fetch the seeds).")
+@click.option("--max-pages", default=200, type=int, show_default=True, help="Maximum number of pages to crawl.")
+@click.option("--subs/--no-subs", "include_subdomains", default=True, show_default=True, help="Include subdomains of the target in scope.")
+@click.option("--render", "render", is_flag=True, default=False, help="Use a headless browser to render pages — finds JS in SPAs (React/Vue/Angular) that plain crawling misses. Needs 'pip install playwright'.")
+@click.option("--render-wait", default=2000, type=int, show_default=True, help="Milliseconds to wait for lazy JS after each page loads (with --render).")
+@click.option("--sitemap/--no-sitemap", "use_sitemap", default=True, show_default=True, help="Also seed the crawl from robots.txt and sitemap.xml.")
+@click.option("--wayback", is_flag=True, default=False, help="Also pull historic .js URLs from the Wayback Machine.")
+@click.option("--domain-filter", default=None, help="Domain used to filter third-party endpoints (defaults to --domain).")
+@click.option("--output", "-o", default="./reports", show_default=True, help="Output directory for reports.")
+@click.option("--html", "html_out", is_flag=True, default=False, help="Also write a styled HTML report per source, plus a batch index.html.")
+@click.option("--regex-endpoints", is_flag=True, default=False, help="Add an offline LinkFinder-style endpoint/URL sweep (noisier, deterministic).")
+@click.option("--offline", "offline_only", is_flag=True, default=False, help="Deterministic scan only — no AI call, no API key, no cost.")
+@click.option("--skip-libs", is_flag=True, default=False, help="Skip well-known JS libraries (jquery, bootstrap, ...) — don't waste AI spend on vendor code.")
+@click.option("--concurrency", "-c", default=5, type=int, show_default=True, help="Fetch/analyze this many sources in parallel.")
+@click.option("--proxy", default=None, help="Route all HTTP through a proxy, e.g. http://127.0.0.1:8080 (Burp).")
+@click.option("--insecure", is_flag=True, default=False, help="Skip TLS certificate verification.")
+@click.option("--header", "-H", "headers", multiple=True, help="Extra request header 'Name: Value' (repeatable).")
+@click.option("--no-cache", is_flag=True, default=False, help="Disable caching.")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Verbose logging.")
+@click.option("--model", "-m", default=None, help="Model to use (defaults per AI_PROVIDER).")
+@click.option("--chunk-delay", default=5, type=int, show_default=True, help="Seconds to wait between chunk API calls.")
+@click.option("--dry-run", is_flag=True, default=False, help="Run the pipeline without calling the AI API (mock response).")
+def hunt(domain, list_path, depth, max_pages, include_subdomains, render, render_wait, use_sitemap,
+         wayback, domain_filter, output, html_out, regex_endpoints, offline_only, skip_libs,
+         concurrency, proxy, insecure, headers, no_cache, verbose, model, chunk_delay, dry_run):
+    """All-in-one: crawl a target, discover and download its JS, then analyze it.
+
+    \b
+    Examples:
+      js-oracle hunt -d example.com
+      js-oracle hunt -d example.com --wayback --html
+      js-oracle hunt -l urls.txt --offline
+    """
+    urls = _read_url_list(list_path) if list_path else []
+    if not (domain or urls):
+        raise click.UsageError("Provide a target with --domain/-d or a seed list with --list/-l.")
+    if concurrency < 1:
+        raise click.UsageError("--concurrency must be >= 1.")
+
+    logger = get_logger("js-oracle", verbose=verbose)
+    console = Console()
+
+    try:
+        header_map = _parse_headers(headers)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+
+    # Auto-fall back to a free offline scan when no API key is configured, so the
+    # tool still produces results out of the box instead of erroring per source.
+    if not (offline_only or dry_run) and not _provider_key_present():
+        console.print(
+            "[yellow]No AI API key detected — running a free offline scan "
+            "(secrets, source maps, endpoints). Set an API key or use --offline to silence this.[/yellow]"
+        )
+        offline_only = True
+
+    if render and not playwright_available():
+        raise click.UsageError(
+            "--render needs Playwright. Install it with: pip install playwright "
+            "(then, if needed: playwright install chromium)."
+        )
+
+    fetcher = JSFetcher(proxy=proxy, extra_headers=header_map, verify=not insecure)
+    seeds, scope_hosts = build_seeds(domain, urls)
+    console.print(f"[cyan]Discovering JS from {len(seeds)} seed(s), scope: {', '.join(sorted(scope_hosts)) or 'any'}[/cyan]")
+    if render:
+        console.print("[cyan]Render mode: driving a headless browser (SPA-aware discovery).[/cyan]")
+
+    def _discover_with(crawler, seed_list):
+        """Seed from robots/sitemap (best-effort) then crawl."""
+        s = list(seed_list)
+        if use_sitemap:
+            base = next((u for u in s if not _looks_like_js(u)), None)
+            if base:
+                try:
+                    s += [u for u in crawler.site_seeds(base, scope_hosts) if u not in s]
+                except Exception as e:
+                    logger.warning(f"robots/sitemap discovery failed: {e}")
+        return crawler.discover(s, scope_hosts, crawl=True)
+
+    try:
+        if render:
+            with BrowserRenderer(
+                proxy=proxy, verify=not insecure, extra_headers=header_map, wait_ms=render_wait
+            ) as renderer:
+                crawler = JSCrawler(
+                    fetcher, max_depth=depth, max_pages=max_pages,
+                    include_subdomains=include_subdomains, concurrency=concurrency,
+                    page_fetch=renderer.fetch_page, page_workers=1,
+                )
+                discovery = _discover_with(crawler, seeds)
+                # Fold in JS the browser fetched over the network (webpack chunks,
+                # dynamic imports) that never appear as <script src> in the DOM.
+                for u in sorted(renderer.captured_js):
+                    if u not in discovery.js_urls:
+                        discovery.js_urls.append(u)
+        else:
+            crawler = JSCrawler(
+                fetcher, max_depth=depth, max_pages=max_pages,
+                include_subdomains=include_subdomains, concurrency=concurrency,
+            )
+            discovery = _discover_with(crawler, seeds)
+
+            # HTTP fallback: a bare domain defaults to https; if that reached
+            # nothing, retry over http before giving up.
+            if discovery.pages_crawled == 0 and domain and not urls and seeds and seeds[0].startswith("https://"):
+                http_seed = "http://" + seeds[0][len("https://"):]
+                logger.info(f"No pages over https — retrying {http_seed}")
+                discovery = _discover_with(crawler, [http_seed])
+    except Exception as e:
+        logger.error(f"Crawl failed: {e}")
+        if verbose:
+            console.print_exception()
+        raise SystemExit(1)
+
+    if wayback and domain:
+        for u in crawler.wayback_js(domain):
+            if u not in discovery.js_urls:
+                discovery.js_urls.append(u)
+
+    if skip_libs:
+        before = len(discovery.js_urls)
+        discovery.js_urls = [u for u in discovery.js_urls if not is_known_library(u)]
+        if before - len(discovery.js_urls):
+            logger.info(f"--skip-libs: skipped {before - len(discovery.js_urls)} known-library URL(s).")
+
+    console.print(
+        Panel(
+            f"Pages crawled: [bold]{discovery.pages_crawled}[/bold]    "
+            f"JS files: [bold green]{len(discovery.js_urls)}[/bold green]    "
+            f"Inline scripts: [bold]{len(discovery.inline_scripts)}[/bold]    "
+            f"Parameters: [bold]{len(discovery.parameters)}[/bold]",
+            title="[bold cyan]Discovery[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+    # Persist the raw discovery so it is useful even before analysis (recon output).
+    out_dir = Path(output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if discovery.js_urls:
+        (out_dir / "discovered_js.txt").write_text("\n".join(discovery.js_urls) + "\n", encoding="utf-8")
+    if discovery.parameters:
+        (out_dir / "parameters.txt").write_text("\n".join(sorted(discovery.parameters)) + "\n", encoding="utf-8")
+
+    if discovery.source_count == 0:
+        console.print("[yellow]No JavaScript discovered. Try a higher --depth, --wayback, or check scope.[/yellow]")
+        raise SystemExit(1)
+
+    reporter = ReportGenerator(output_dir=output, html=html_out, quiet=concurrency > 1)
+    target = domain_filter or domain or ""
+
+    def _pipeline(source_name: str, content: str):
+        try:
+            merged = run_pipeline(
+                source_name, content, target, reporter, console,
+                not no_cache, logger, model, chunk_delay, dry_run, regex_endpoints, offline_only,
+            )
+            return (source_name, merged)
+        except Exception as e:
+            logger.error(f"Failed to analyze '{source_name}': {e}")
+            if verbose:
+                console.print_exception()
+            return (source_name, None)
+
+    def _url_task(u: str):
+        try:
+            content = fetcher.fetch_url(u)
+        except Exception as e:
+            logger.error(f"Failed to fetch '{u}': {e}")
+            return (u, None)
+        return _pipeline(u, content)
+
+    tasks = [functools.partial(_url_task, u) for u in discovery.js_urls]
+    tasks += [functools.partial(_pipeline, name, body) for name, body in discovery.inline_scripts.items()]
+
+    if not (offline_only or dry_run) and len(tasks) >= 15:
+        console.print(
+            f"[yellow]Heads-up: sending {len(tasks)} source(s) to the AI. For a cheaper run consider "
+            f"--offline, --skip-libs, AI_PROVIDER=gemini (free tier), or --model claude-haiku-4-5.[/yellow]"
+        )
+
+    results: list[tuple[str, dict]] = []
+    try:
+        if concurrency > 1 and len(tasks) > 1:
+            console.print(f"[cyan]Analyzing {len(tasks)} source(s), concurrency={concurrency}.[/cyan]")
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                for name, merged in pool.map(lambda job: job(), tasks):
+                    if merged is not None:
+                        results.append((name, merged))
+        else:
+            for job in tasks:
+                name, merged = job()
+                if merged is not None:
+                    results.append((name, merged))
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Aborted by user.[/yellow]")
+
+    if len(results) > 1:
+        _print_batch_summary(console, results)
+
+    if results:
+        summary_meta = {
+            "target": domain or "",
+            "seeds": len(seeds),
+            "pages_crawled": discovery.pages_crawled,
+            "js_discovered": len(discovery.js_urls),
+            "inline_scripts": len(discovery.inline_scripts),
+            "offline_only": offline_only,
+        }
+        summary_path = reporter.save_run_summary(results, summary_meta)
+        console.print(f"[green]Run summary: {summary_path}[/green]")
+
+    if html_out and results:
+        index = reporter.save_batch_index(results)
+        console.print(f"[green]Batch HTML index: {index}[/green]")
+
+    console.print(f"[green]Recon artifacts saved under: {output}[/green]")
+
+    # Discovery already succeeded (we exit earlier when nothing is found), so a
+    # run that surfaced no findings is still a successful scan — exit 0 so the
+    # tool composes cleanly in automation. Reports/artifacts are on disk either way.
+    if not results:
+        console.print("[yellow]No findings in the analyzed sources (discovery artifacts still saved).[/yellow]")
 
 
 @cli.command("clear-cache")

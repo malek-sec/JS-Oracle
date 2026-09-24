@@ -329,6 +329,44 @@ code{background:rgba(127,127,127,.12);padding:1px 5px;border-radius:5px;font-siz
         path.write_text(doc, encoding="utf-8")
         return str(path)
 
+    def save_run_summary(self, results: list, meta: dict | None = None) -> str:
+        """Write a single machine-readable summary of the whole run to summary.json.
+
+        ``results`` is a list of ``(source_name, merged_dict)`` tuples. The file
+        holds per-source rollups plus a cross-source **deduplicated** view of all
+        endpoints and secrets — handy for piping a whole run into other tooling.
+        """
+        # Cross-source dedup reuses the same merge logic used within a source.
+        from core.merger import result_merger
+
+        aggregate = result_merger.merge([m for _, m in results])
+        totals = {
+            "sources": len(results),
+            "endpoints": len(aggregate.get("endpoints", [])),
+            "secrets": len(aggregate.get("secrets", [])),
+            "auth_logic": len(aggregate.get("auth_logic", [])),
+            "suspicious_logic": len(aggregate.get("suspicious_logic", [])),
+        }
+        payload = {
+            "generated": datetime.now().isoformat(timespec="seconds"),
+            "meta": meta or {},
+            "totals": totals,
+            "sources": [
+                {
+                    "source": name,
+                    "highest_severity": m.get("analysis_summary", {}).get("highest_severity", "none"),
+                    "total_findings": m.get("analysis_summary", {}).get("total_findings", 0),
+                    "endpoints": len(m.get("endpoints", [])),
+                    "secrets": len(m.get("secrets", [])),
+                }
+                for name, m in results
+            ],
+            "aggregate": aggregate,
+        }
+        path = self.output_dir / "summary.json"
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return str(path)
+
     def save_batch_index(self, results: list) -> str:
         """Write an index.html dashboard linking every source's HTML report.
 

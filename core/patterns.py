@@ -2,7 +2,8 @@
 
 These complement the LLM analysis with cheap, high-confidence signals:
   * source-map references (frequently leak a bundle's original source),
-  * well-known secret formats (AWS / Google / GitHub / Slack / Stripe / JWT / keys),
+  * well-known secret formats (AWS, Google, GitHub, GitLab, npm, Slack, Twilio,
+    SendGrid, Mailgun, Stripe, Square, Anthropic, OpenAI, JWTs, private keys),
   * private (RFC 1918) IP addresses,
   * and — opt-in — a LinkFinder-style endpoint/URL sweep.
 
@@ -19,11 +20,29 @@ _SOURCEMAP_RE = re.compile(r"//[#@]\s*sourceMappingURL\s*=\s*(\S+)", re.IGNORECA
 # ── secrets (curated, high-confidence formats only, to keep false positives low) ──
 # Each entry maps to a `type` from the output schema's secret enum.
 _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("aws_key", re.compile(r"A(?:KIA|SIA)[0-9A-Z]{16}")),                       # AWS access key id
+    # ── cloud / infra ────────────────────────────────────────────────────────
+    ("aws_key", re.compile(r"A(?:KIA|SIA)[0-9A-Z]{16}")),                        # AWS access key id
     ("api_key", re.compile(r"AIza[0-9A-Za-z\-_]{35}")),                          # Google API key
-    ("token",   re.compile(r"gh[pousr]_[0-9A-Za-z]{36,255}")),                   # GitHub token
+    ("api_key", re.compile(r"GOCSPX-[0-9A-Za-z_\-]{28}")),                       # Google OAuth client secret
+    ("api_key", re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}")),                       # Google OAuth access token
+    # ── source hosting ───────────────────────────────────────────────────────
+    ("token",   re.compile(r"gh[pousr]_[0-9A-Za-z]{36,255}")),                   # GitHub token (classic)
+    ("token",   re.compile(r"github_pat_[0-9A-Za-z_]{82}")),                     # GitHub fine-grained PAT
+    ("token",   re.compile(r"glpat-[0-9A-Za-z_\-]{20}")),                        # GitLab PAT
+    ("token",   re.compile(r"npm_[0-9A-Za-z]{36}")),                             # npm access token
+    # ── messaging / comms ────────────────────────────────────────────────────
     ("token",   re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,48}")),                  # Slack token
-    ("token",   re.compile(r"sk_live_[0-9a-zA-Z]{24,}")),                        # Stripe secret key
+    ("token",   re.compile(r"https://hooks\.slack\.com/services/T[0-9A-Za-z_]+/B[0-9A-Za-z_]+/[0-9A-Za-z]+")),  # Slack webhook
+    ("token",   re.compile(r"SK[0-9a-f]{32}")),                                  # Twilio API key
+    ("api_key", re.compile(r"SG\.[0-9A-Za-z_\-]{22}\.[0-9A-Za-z_\-]{43}")),      # SendGrid API key
+    ("api_key", re.compile(r"key-[0-9a-f]{32}")),                                # Mailgun API key
+    # ── payments ─────────────────────────────────────────────────────────────
+    ("token",   re.compile(r"[sr]k_live_[0-9a-zA-Z]{24,}")),                     # Stripe secret / restricted key
+    ("token",   re.compile(r"sq0(?:atp|csp)-[0-9A-Za-z_\-]{22}")),               # Square access/OAuth token
+    # ── AI providers ─────────────────────────────────────────────────────────
+    ("api_key", re.compile(r"sk-ant-[0-9A-Za-z_\-]{20,}")),                      # Anthropic API key
+    ("api_key", re.compile(r"sk-(?:proj-)?[0-9A-Za-z]{20,}")),                   # OpenAI API key
+    # ── generic high-confidence ──────────────────────────────────────────────
     ("jwt",     re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("other",   re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")),
 ]

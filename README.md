@@ -1,220 +1,175 @@
 # JS-Oracle
 
-JavaScript analysis for bug bounty hunters. Point it at a file, a URL, or a
-directory and it extracts endpoints, secrets, authentication logic, and
-suspicious patterns into terminal, Markdown, JSON, and HTML reports.
+An all-in-one JavaScript reconnaissance tool for bug bounty hunters and web
+application security testers. Point it at a domain and it crawls the target,
+discovers and downloads every JavaScript file, then analyzes them for hidden
+endpoints, API keys, secrets, and parameters — no need to run a separate
+crawler or fetcher first.
 
-Analysis runs through Claude by default, constrained to a strict JSON schema so
-the output is always machine-parseable. Gemini is supported as an optional
-alternative. A deterministic offline mode runs the whole pipeline with no model,
-no API key, and no cost.
+Analysis has two layers:
 
-JS-Oracle stands alone, and also serves as Module 4 of
-[scan-engine](https://github.com/malek-sec/scan-engine), the pipeline behind
-[BountyHub](https://github.com/malek-sec/BountyHub).
-
-> Only analyse assets you are authorised to test.
-
----
-
-## Why it exists
-
-Modern applications put their real attack surface in JavaScript. The API routes,
-the parameter names, the feature flags, the occasional key someone shipped by
-mistake — it is all in the bundle, buried under a megabyte of minified vendor
-code. Reading it by hand does not scale. Feeding all of it to a model is
-expensive and mostly pays for analysing jQuery.
-
-JS-Oracle splits the difference. A deterministic pass catches what regex catches
-reliably — known key formats, source maps, private IPs — for free. The model gets
-the remaining custom code, beautified and chunked to fit, and returns structured
-findings. Both sets are merged, deduplicated, and filtered against your target
-domain so third-party endpoints do not clutter the report.
+- **Offline scan** (default, free, no API key) — deterministic regex passes for
+  secrets (AWS, Google, GitHub, GitLab, npm, Slack, Twilio, SendGrid, Mailgun,
+  Stripe, Square, Anthropic, OpenAI, JWTs, private keys), internal IPs,
+  source-map leaks, and endpoints.
+- **AI scan** (optional) — sends each file to Claude (or Gemini) to extract
+  endpoints, auth logic, and suspicious patterns that regex misses. Enabled
+  automatically when an API key is configured.
 
 ## Features
 
-- Extracts API endpoints with path, method, parameters, body shape, and a
-  confidence score
-- Flags likely secrets — API keys, JWTs, tokens, internal IPs — with values
-  masked in the output
-- Maps authentication logic, including token storage and mechanism
-- Surfaces suspicious logic with severity
-- Offline deterministic scan: source-map leaks, known secret formats
-  (AWS, Google, GitHub, Slack, Stripe, JWT, private keys), private IPs, and an
-  opt-in LinkFinder-style endpoint sweep
-- Batch-analyses a list of remote JS URLs, so `katana` or `gau` output pipes
-  straight in
-- Proxy, custom headers, and TLS-skip for fetching through Burp or behind auth
-- Parallel analysis across sources
-- Auto-beautifies minified bundles and chunks oversized files to fit the context
-  window
-- Filters third-party endpoints when given a target domain
-- Local cache keyed by content, provider, model, and prompt version, so identical
-  content is never paid for twice
-- Markdown, JSON, and HTML reports plus a rich terminal summary and batch index
+- **Standalone discovery** — give it a domain (`-d`) or a URL list (`-l`) and it
+  finds the JavaScript itself. No `getJS`, `katana`, or `hakrawler` required.
+- **SPA-aware rendering** (`--render`) — drives a real headless browser to catch
+  JavaScript that modern apps (React, Vue, Angular, Next.js) load at runtime:
+  webpack chunks, lazy-loaded modules, and dynamic imports that never appear in
+  the initial HTML. This is the fix for "the tool found no JS files".
+- **Multi-source discovery** — crawls links, parses `robots.txt` and
+  `sitemap.xml`, and can pull historic `.js` URLs from the Wayback Machine
+  (`--wayback`). Falls back from `https` to `http` automatically.
+- **Concurrent** — crawling, downloading, and analysis all run in parallel.
+- **Robust** — dead links, timeouts, and TLS errors are logged and skipped, never
+  fatal.
+- **Scope-aware** — stays on the target domain and its subdomains; filters
+  third-party endpoints out of results.
+- **Proxy-friendly** — route everything through Burp with `--proxy`.
+- **Structured output** — clean terminal tables plus per-source JSON/Markdown
+  reports, an optional HTML report, and plain-text `discovered_js.txt` /
+  `parameters.txt` for piping into other tools.
 
-## Install
+## Requirements
 
-Requires Python 3.10 or newer.
+- Python 3.10 or newer
+
+## Installation
 
 ```bash
-git clone https://github.com/malek-sec/JS-Oracle.git
-cd JS-Oracle
-
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-
-# Option A - quick start
+git clone https://github.com/malek-sec/js-oracle.git
+cd js-oracle
 pip install -r requirements.txt
-
-# Option B - packaged install, adds a `js-oracle` command
-pip install .
-pip install .[dev]                 # with test and lint tooling
-
-# Gemini is optional, only for AI_PROVIDER=gemini
-pip install .[gemini]
 ```
 
-## Configure
+Or install it as a command (adds the `js-oracle` executable to your PATH):
+
+```bash
+pip install .
+```
+
+### Optional: enable SPA rendering (`--render`)
+
+To discover JavaScript in single-page apps that load their code at runtime,
+install the headless browser support:
+
+```bash
+pip install '.[browser]'    # or: pip install playwright
+playwright install chromium # downloads the browser (skip if one is already present)
+```
+
+### Optional: enable the AI scan
+
+The offline scan needs no setup. To enable the AI-powered analysis, provide an
+API key. Copy the example env file and fill it in:
 
 ```bash
 cp .env.example .env
+# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-```ini
-AI_PROVIDER=anthropic              # "anthropic" (default) or "gemini"
-ANTHROPIC_API_KEY="sk-ant-..."     # required for the default provider
-ANTHROPIC_EFFORT=medium            # low | medium | high | xhigh | max
-# ANTHROPIC_WORKSPACE_ID="wrkspc_..."   # only for identity-linked keys
-# GEMINI_API_KEY="..."                  # only when AI_PROVIDER=gemini
+To use Google Gemini's free tier instead of Claude:
+
+```bash
+pip install '.[gemini]'
+# in .env:  AI_PROVIDER=gemini  and  GEMINI_API_KEY=...
 ```
 
-The default model is `claude-opus-4-8` at `effort=medium`, overridable per run
-with `--model`. Under `AI_PROVIDER=gemini` the default is `gemini-2.5-flash`.
-
-`ANTHROPIC_WORKSPACE_ID` is only needed if the API replies that
-`anthropic-workspace-id is required`; find it under Console, Settings,
-Workspaces.
+If no key is found, JS-Oracle automatically falls back to the free offline scan.
 
 ## Usage
 
-```bash
-# A single remote JS file
-js-oracle analyze --url https://target.com/static/app.js --domain target.com
-
-# Several URLs at once
-js-oracle analyze -u https://t.com/a.js -u https://t.com/b.js --domain t.com
-
-# A list from your recon pipeline, in parallel, with HTML reports
-katana -u https://target.com -silent | grep '\.js$' \
-  | js-oracle analyze --url-list - --domain target.com -c 5 --html
-
-# Through Burp, skipping TLS checks, with an auth header
-js-oracle analyze -u https://target.com/app.js \
-  --proxy http://127.0.0.1:8080 --insecure -H "Authorization: Bearer TOKEN"
-
-# A local file, or a directory tree
-js-oracle analyze --file ./bundle.min.js
-js-oracle analyze --dir ./downloaded_js --domain target.com
-
-# Exercise the full pipeline without spending tokens
-js-oracle analyze -f app.js --dry-run
-
-js-oracle --version
-js-oracle clear-cache
-```
-
-Not installed as a command? Run it as a module: `python3 main.py analyze ...`
-
-### Options
-
-| Flag | Description |
-|---|---|
-| `--url`, `-u` | JS file URL (repeatable) |
-| `--url-list` | File of JS URLs, one per line (`-` reads stdin) |
-| `--file`, `-f` | Local JS file path |
-| `--dir`, `-d` | Directory of JS files (recursive) |
-| `--domain` | Target domain — drops third-party endpoints |
-| `--output`, `-o` | Report output directory (default `./reports`) |
-| `--html` | Also write HTML per source plus a batch `index.html` |
-| `--offline` | Deterministic scan only — no model call, no key, no cost |
-| `--skip-libs` | Skip known JS libraries (jquery, bootstrap, gsap, and so on) |
-| `--regex-endpoints` | Add an offline LinkFinder-style endpoint sweep (noisier) |
-| `--concurrency`, `-c` | Analyse N sources in parallel (default 1) |
-| `--proxy` | Route URL fetches through a proxy, such as Burp |
-| `--insecure` | Skip TLS certificate verification when fetching |
-| `--header`, `-H` | Extra request header `Name: Value` (repeatable) |
-| `--model`, `-m` | Override the model for this run |
-| `--chunk-delay` | Seconds between chunk API calls (default 5) |
-| `--no-cache` | Disable cache reads and writes |
-| `--dry-run` | Full pipeline with a mock response — no API call |
-| `--verbose`, `-v` | Debug logging and full tracebacks |
-
-## Controlling cost
-
-Minified bundles are token-heavy and Opus is a premium model, so a large batch
-adds up fast. A three-pass workflow keeps the spend on the files that deserve it:
+The main command is `hunt` — it does discovery and analysis in one step.
 
 ```bash
-# 1. Free triage over the whole list — deterministic, no model
-js-oracle analyze --url-list all_js.txt --offline --skip-libs --domain target.com
+# Crawl a domain, discover its JS, and analyze it
+python main.py hunt -d example.com
 
-# 2. Bulk AI pass on the Gemini free tier, skipping vendor libraries
-js-oracle analyze --url-list all_js.txt --skip-libs -c 5 --domain target.com
+# Offline only (free, no API key needed)
+python main.py hunt -d example.com --offline
 
-# 3. Deep Opus pass on the few interesting custom files
-js-oracle analyze -u https://target.com/assets/app.js --domain target.com
+# Single-page app (React/Vue/Angular) — render with a headless browser
+python main.py hunt -d app.example.com --render
+
+# Deeper crawl, include historic JS from the Wayback Machine, write an HTML report
+python main.py hunt -d example.com --depth 3 --wayback --html
+
+# Start from your own list of pages or .js URLs
+python main.py hunt -l urls.txt
+
+# Route through Burp and send authenticated requests
+python main.py hunt -d example.com --proxy http://127.0.0.1:8080 -H "Cookie: session=..."
 ```
 
-The levers, roughly in order of impact: `--offline` costs nothing at all,
-`--skip-libs` drops vendor code, `AI_PROVIDER=gemini` uses the free tier,
-`--model claude-haiku-4-5` is around five times cheaper than Opus,
-`ANTHROPIC_EFFORT=low` reduces deliberation, and the cache means re-running
-identical content never charges twice.
+If you installed with `pip install .`, replace `python main.py` with `js-oracle`:
+
+```bash
+js-oracle hunt -d example.com --offline
+```
+
+### Analyzing JS you already have
+
+If you already have JS files or URLs, the `analyze` command skips discovery:
+
+```bash
+python main.py analyze -u https://example.com/app.js      # a single URL
+python main.py analyze --url-list js_urls.txt             # a list of JS URLs
+python main.py analyze --dir ./downloaded_js              # a local directory
+python main.py analyze -f ./app.js                        # a single local file
+```
+
+### Common options (`hunt`)
+
+| Option | Description |
+| --- | --- |
+| `-d, --domain` | Target domain to crawl (discovers `.js` automatically). |
+| `-l, --list` | File of seed URLs — pages or `.js`, one per line (`-` reads stdin). |
+| `--depth` | Crawl depth for link-following (default `2`; `0` = only the seeds). |
+| `--max-pages` | Maximum number of pages to crawl (default `200`). |
+| `--subs / --no-subs` | Include subdomains of the target in scope (default: include). |
+| `--render` | Use a headless browser to find JS in SPAs (needs `pip install playwright`). |
+| `--render-wait` | Milliseconds to wait for lazy JS after each page loads (default `2000`). |
+| `--sitemap / --no-sitemap` | Seed the crawl from `robots.txt` and `sitemap.xml` (default: on). |
+| `--wayback` | Also pull historic `.js` URLs from the Wayback Machine. |
+| `--offline` | Deterministic scan only — no AI call, no API key, no cost. |
+| `--skip-libs` | Skip well-known libraries (jQuery, Bootstrap, ...) to save AI spend. |
+| `-c, --concurrency` | Number of sources fetched/analyzed in parallel (default `5`). |
+| `--proxy` | Route all HTTP through a proxy, e.g. `http://127.0.0.1:8080`. |
+| `--insecure` | Skip TLS certificate verification. |
+| `-H, --header` | Extra request header `'Name: Value'` (repeatable). |
+| `-o, --output` | Output directory for reports (default `./reports`). |
+| `--html` | Also write a styled HTML report per source, plus a batch index. |
+| `-m, --model` | Model to use (defaults per provider). |
+| `-v, --verbose` | Verbose logging. |
+
+Run `python main.py hunt --help` for the full list.
 
 ## Output
 
-For each source:
+For each run, JS-Oracle writes to the output directory (default `./reports`):
 
-- a terminal summary in rich tables
-- `reports/<slug>_<hash>.md` — human-readable Markdown
-- `reports/<slug>_<hash>.json` — raw structured findings
-- `reports/<slug>_<hash>.html` — styled report, with `--html`
+- `discovered_js.txt` — every `.js` URL that was found (one per line).
+- `parameters.txt` — query-string parameter names seen during the crawl.
+- `<source>.json` and `<source>.md` — per-file findings (endpoints, secrets,
+  auth logic, suspicious patterns).
+- `summary.json` — a single machine-readable rollup of the whole run, with a
+  cross-source **deduplicated** view of all findings (ideal for automation).
+- `index.html` — a browsable batch report, when `--html` is used.
 
-The hash suffix guarantees two sources never overwrite each other's report.
+Findings are also printed to the terminal, ranked by severity.
 
-## How it works
+## Responsible use
 
-```
-fetch -> beautify (if minified) -> chunk (if oversized) -> analyse (LLM, strict JSON)
-      -> merge with offline scan (secrets, source maps, IPs, endpoints)
-      -> deduplicate -> filter third-party -> report (terminal / MD / JSON / HTML)
-```
-
-Severity in the merged headline is calibrated by secret kind, so a source-map
-reference does not get reported at the same level as a live AWS key.
-
-## Security notes
-
-- Analysed JavaScript is treated as untrusted data and wrapped in explicit
-  delimiters. The system prompt instructs the model to ignore instructions
-  embedded in the code, which is what stops a hostile bundle from steering its
-  own analysis.
-- Secret values are masked in reports. Only a preview is shown, never the full
-  value.
-- `.env`, `.cache/`, and `reports/` are git-ignored. Never commit real keys.
-- Exit codes are honest: a failed run does not exit 0, so pipeline steps
-  downstream can trust them.
-
-## Development
-
-```bash
-pip install .[dev]
-pytest
-ruff check .
-```
-
-CI runs the test suite and lint across Python 3.10, 3.11, and 3.12.
+JS-Oracle is for authorized security testing only. Only run it against targets
+you own or are explicitly permitted to test (for example, an in-scope bug bounty
+program). You are responsible for how you use it.
 
 ## License
 

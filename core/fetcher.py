@@ -95,6 +95,42 @@ class JSFetcher:
 
         return bytes(buf).decode(encoding, errors="replace")
 
+    def fetch_page(self, url: str) -> tuple[str, str, str]:
+        """Fetch an arbitrary URL (HTML page or JS) for the crawler.
+
+        Returns ``(final_url, content_type, text)`` so the crawler can tell an
+        HTML page (parse it for links/scripts) from a JS body (analyze it), and
+        can resolve relative URLs against the post-redirect location.
+
+        Mirrors :meth:`fetch_url`'s size cap and TLS/timeout handling, but never
+        raises: on any failure it returns ``(url, "", "")`` so one dead link can
+        never abort a crawl.
+        """
+        if not url.startswith(("http://", "https://")):
+            return (url, "", "")
+        try:
+            with httpx.Client(
+                proxy=self.proxy,
+                verify=self.verify,
+                timeout=self.timeout,
+                follow_redirects=True,
+            ) as client, client.stream(
+                "GET", url, headers=self._get_random_headers()
+            ) as response:
+                if not response.is_success:
+                    return (str(response.url), "", "")
+                content_type = response.headers.get("content-type", "").lower()
+                buf = bytearray()
+                for chunk in response.iter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > self.max_bytes:
+                        break  # truncate rather than fail — we only need references
+                encoding = response.encoding or "utf-8"
+                final_url = str(response.url)
+        except (httpx.TimeoutException, httpx.RequestError):
+            return (url, "", "")
+        return (final_url, content_type, bytes(buf).decode(encoding, errors="replace"))
+
     def fetch_file(self, path: str) -> str:
         p = Path(path)
         if not p.exists():
