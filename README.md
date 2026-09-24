@@ -19,11 +19,16 @@ Analysis has two layers:
 
 - **Standalone discovery** — give it a domain (`-d`) or a URL list (`-l`) and it
   finds the JavaScript itself. No `getJS`, `katana`, or `hakrawler` required.
+- **SPA-aware rendering** (`--render`) — drives a real headless browser to catch
+  JavaScript that modern apps (React, Vue, Angular, Next.js) load at runtime:
+  webpack chunks, lazy-loaded modules, and dynamic imports that never appear in
+  the initial HTML. This is the fix for "the tool found no JS files".
+- **Multi-source discovery** — crawls links, parses `robots.txt` and
+  `sitemap.xml`, and can pull historic `.js` URLs from the Wayback Machine
+  (`--wayback`). Falls back from `https` to `http` automatically.
 - **Concurrent** — crawling, downloading, and analysis all run in parallel.
 - **Robust** — dead links, timeouts, and TLS errors are logged and skipped, never
   fatal.
-- **Wayback support** — optionally pull historic `.js` URLs from the Wayback
-  Machine (`--wayback`).
 - **Scope-aware** — stays on the target domain and its subdomains; filters
   third-party endpoints out of results.
 - **Proxy-friendly** — route everything through Burp with `--proxy`.
@@ -47,6 +52,16 @@ Or install it as a command (adds the `js-oracle` executable to your PATH):
 
 ```bash
 pip install .
+```
+
+### Optional: enable SPA rendering (`--render`)
+
+To discover JavaScript in single-page apps that load their code at runtime,
+install the headless browser support:
+
+```bash
+pip install '.[browser]'    # or: pip install playwright
+playwright install chromium # downloads the browser (skip if one is already present)
 ```
 
 ### Optional: enable the AI scan
@@ -78,6 +93,9 @@ python main.py hunt -d example.com
 
 # Offline only (free, no API key needed)
 python main.py hunt -d example.com --offline
+
+# Single-page app (React/Vue/Angular) — render with a headless browser
+python main.py hunt -d app.example.com --render
 
 # Deeper crawl, include historic JS from the Wayback Machine, write an HTML report
 python main.py hunt -d example.com --depth 3 --wayback --html
@@ -115,6 +133,9 @@ python main.py analyze -f ./app.js                        # a single local file
 | `--depth` | Crawl depth for link-following (default `2`; `0` = only the seeds). |
 | `--max-pages` | Maximum number of pages to crawl (default `200`). |
 | `--subs / --no-subs` | Include subdomains of the target in scope (default: include). |
+| `--render` | Use a headless browser to find JS in SPAs (needs `pip install playwright`). |
+| `--render-wait` | Milliseconds to wait for lazy JS after each page loads (default `2000`). |
+| `--sitemap / --no-sitemap` | Seed the crawl from `robots.txt` and `sitemap.xml` (default: on). |
 | `--wayback` | Also pull historic `.js` URLs from the Wayback Machine. |
 | `--offline` | Deterministic scan only — no AI call, no API key, no cost. |
 | `--skip-libs` | Skip well-known libraries (jQuery, Bootstrap, ...) to save AI spend. |

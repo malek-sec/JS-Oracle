@@ -44,6 +44,14 @@ def test_collect_js_refs_finds_script_src_and_bare_refs():
     assert all(".json" not in r for r in refs)
 
 
+def test_collect_js_refs_decodes_html_entities():
+    crawler = JSCrawler(_FakeFetcher({}))
+    html = '<script src="https://cdn.example.com/main.js?a=1&amp;b=2"></script>'
+    refs = crawler._collect_js_refs("https://example.com/", html)
+    assert "https://cdn.example.com/main.js?a=1&b=2" in refs
+    assert all("&amp;" not in r for r in refs)
+
+
 def test_collect_inline_skips_tiny_bodies():
     crawler = JSCrawler(_FakeFetcher({}))
     html = "<script>var a=1;</script><script>" + "x=" * 40 + "</script>"
@@ -101,3 +109,58 @@ def test_discover_respects_max_pages():
 def test_source_count_counts_js_and_inline():
     r = DiscoveryResult(js_urls=["a.js", "b.js"], inline_scripts={"p#1": "code"})
     assert r.source_count == 3
+
+
+def test_custom_page_fetch_is_used():
+    # A renderer stands in via page_fetch; the crawler must call it, not the
+    # default HTTP fetcher.
+    calls: list[str] = []
+
+    def render_fetch(url):
+        calls.append(url)
+        return (url, "text/html", '<script src="/spa.js"></script>')
+
+    crawler = JSCrawler(_FakeFetcher({}), max_depth=0, page_fetch=render_fetch, page_workers=1)
+    result = crawler.discover(["https://example.com"], {"example.com"})
+    assert calls == ["https://example.com"]
+    assert "https://example.com/spa.js" in result.js_urls
+
+
+def test_site_seeds_parses_robots_and_sitemap():
+    pages = {
+        "https://example.com/robots.txt": (
+            "https://example.com/robots.txt",
+            "text/plain",
+            "User-agent: *\nDisallow: /admin/panel\nSitemap: https://example.com/sitemap.xml\n",
+        ),
+        "https://example.com/sitemap.xml": (
+            "https://example.com/sitemap.xml",
+            "application/xml",
+            "<urlset><url><loc>https://example.com/dashboard</loc></url>"
+            "<url><loc>https://evil.com/x</loc></url></urlset>",
+        ),
+    }
+    crawler = JSCrawler(_FakeFetcher(pages))
+    seeds = crawler.site_seeds("https://example.com/", {"example.com"})
+    assert "https://example.com/admin/panel" in seeds   # from robots Disallow
+    assert "https://example.com/dashboard" in seeds      # from sitemap <loc>
+    assert "https://evil.com/x" not in seeds             # out of scope, dropped
+
+
+def test_site_seeds_follows_nested_sitemap_index():
+    pages = {
+        "https://example.com/robots.txt": ("https://example.com/robots.txt", "text/plain", ""),
+        "https://example.com/sitemap.xml": (
+            "https://example.com/sitemap.xml",
+            "application/xml",
+            "<sitemapindex><sitemap><loc>https://example.com/sub.xml</loc></sitemap></sitemapindex>",
+        ),
+        "https://example.com/sub.xml": (
+            "https://example.com/sub.xml",
+            "application/xml",
+            "<urlset><url><loc>https://example.com/deep/page</loc></url></urlset>",
+        ),
+    }
+    crawler = JSCrawler(_FakeFetcher(pages))
+    seeds = crawler.site_seeds("https://example.com/", {"example.com"})
+    assert "https://example.com/deep/page" in seeds

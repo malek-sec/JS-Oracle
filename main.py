@@ -19,7 +19,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from core.fetcher import JSFetcher
-from core.crawler import JSCrawler, build_seeds
+from core.crawler import JSCrawler, build_seeds, _looks_like_js
+from core.renderer import BrowserRenderer, playwright_available
 from core.preprocessor import preprocessor
 from core.analyzer import JSAnalyzer
 from core.merger import result_merger, _SEVERITY_RANK
@@ -361,6 +362,9 @@ def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_
 @click.option("--depth", default=2, type=int, show_default=True, help="Crawl depth for link-following (0 = only fetch the seeds).")
 @click.option("--max-pages", default=200, type=int, show_default=True, help="Maximum number of pages to crawl.")
 @click.option("--subs/--no-subs", "include_subdomains", default=True, show_default=True, help="Include subdomains of the target in scope.")
+@click.option("--render", "render", is_flag=True, default=False, help="Use a headless browser to render pages — finds JS in SPAs (React/Vue/Angular) that plain crawling misses. Needs 'pip install playwright'.")
+@click.option("--render-wait", default=2000, type=int, show_default=True, help="Milliseconds to wait for lazy JS after each page loads (with --render).")
+@click.option("--sitemap/--no-sitemap", "use_sitemap", default=True, show_default=True, help="Also seed the crawl from robots.txt and sitemap.xml.")
 @click.option("--wayback", is_flag=True, default=False, help="Also pull historic .js URLs from the Wayback Machine.")
 @click.option("--domain-filter", default=None, help="Domain used to filter third-party endpoints (defaults to --domain).")
 @click.option("--output", "-o", default="./reports", show_default=True, help="Output directory for reports.")
@@ -377,9 +381,9 @@ def analyze(url, url_list, file_path, dir_path, domain, output, html_out, regex_
 @click.option("--model", "-m", default=None, help="Model to use (defaults per AI_PROVIDER).")
 @click.option("--chunk-delay", default=5, type=int, show_default=True, help="Seconds to wait between chunk API calls.")
 @click.option("--dry-run", is_flag=True, default=False, help="Run the pipeline without calling the AI API (mock response).")
-def hunt(domain, list_path, depth, max_pages, include_subdomains, wayback, domain_filter, output,
-         html_out, regex_endpoints, offline_only, skip_libs, concurrency, proxy, insecure,
-         headers, no_cache, verbose, model, chunk_delay, dry_run):
+def hunt(domain, list_path, depth, max_pages, include_subdomains, render, render_wait, use_sitemap,
+         wayback, domain_filter, output, html_out, regex_endpoints, offline_only, skip_libs,
+         concurrency, proxy, insecure, headers, no_cache, verbose, model, chunk_delay, dry_run):
     """All-in-one: crawl a target, discover and download its JS, then analyze it.
 
     \b
@@ -411,20 +415,59 @@ def hunt(domain, list_path, depth, max_pages, include_subdomains, wayback, domai
         )
         offline_only = True
 
-    fetcher = JSFetcher(proxy=proxy, extra_headers=header_map, verify=not insecure)
-    crawler = JSCrawler(
-        fetcher,
-        max_depth=depth,
-        max_pages=max_pages,
-        include_subdomains=include_subdomains,
-        concurrency=concurrency,
-    )
+    if render and not playwright_available():
+        raise click.UsageError(
+            "--render needs Playwright. Install it with: pip install playwright "
+            "(then, if needed: playwright install chromium)."
+        )
 
+    fetcher = JSFetcher(proxy=proxy, extra_headers=header_map, verify=not insecure)
     seeds, scope_hosts = build_seeds(domain, urls)
     console.print(f"[cyan]Discovering JS from {len(seeds)} seed(s), scope: {', '.join(sorted(scope_hosts)) or 'any'}[/cyan]")
+    if render:
+        console.print("[cyan]Render mode: driving a headless browser (SPA-aware discovery).[/cyan]")
+
+    def _discover_with(crawler, seed_list):
+        """Seed from robots/sitemap (best-effort) then crawl."""
+        s = list(seed_list)
+        if use_sitemap:
+            base = next((u for u in s if not _looks_like_js(u)), None)
+            if base:
+                try:
+                    s += [u for u in crawler.site_seeds(base, scope_hosts) if u not in s]
+                except Exception as e:
+                    logger.warning(f"robots/sitemap discovery failed: {e}")
+        return crawler.discover(s, scope_hosts, crawl=True)
 
     try:
-        discovery = crawler.discover(seeds, scope_hosts, crawl=True)
+        if render:
+            with BrowserRenderer(
+                proxy=proxy, verify=not insecure, extra_headers=header_map, wait_ms=render_wait
+            ) as renderer:
+                crawler = JSCrawler(
+                    fetcher, max_depth=depth, max_pages=max_pages,
+                    include_subdomains=include_subdomains, concurrency=concurrency,
+                    page_fetch=renderer.fetch_page, page_workers=1,
+                )
+                discovery = _discover_with(crawler, seeds)
+                # Fold in JS the browser fetched over the network (webpack chunks,
+                # dynamic imports) that never appear as <script src> in the DOM.
+                for u in sorted(renderer.captured_js):
+                    if u not in discovery.js_urls:
+                        discovery.js_urls.append(u)
+        else:
+            crawler = JSCrawler(
+                fetcher, max_depth=depth, max_pages=max_pages,
+                include_subdomains=include_subdomains, concurrency=concurrency,
+            )
+            discovery = _discover_with(crawler, seeds)
+
+            # HTTP fallback: a bare domain defaults to https; if that reached
+            # nothing, retry over http before giving up.
+            if discovery.pages_crawled == 0 and domain and not urls and seeds and seeds[0].startswith("https://"):
+                http_seed = "http://" + seeds[0][len("https://"):]
+                logger.info(f"No pages over https — retrying {http_seed}")
+                discovery = _discover_with(crawler, [http_seed])
     except Exception as e:
         logger.error(f"Crawl failed: {e}")
         if verbose:

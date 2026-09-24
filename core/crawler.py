@@ -16,6 +16,7 @@ Everything is best-effort: a dead link, a timeout, or a garbage page is logged
 and skipped, never fatal. The heavy analysis then runs over whatever was found.
 """
 
+import html
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -99,21 +100,29 @@ class JSCrawler:
         max_pages: int = 200,
         include_subdomains: bool = True,
         concurrency: int = 10,
+        page_fetch=None,
+        page_workers: int | None = None,
     ):
         self.fetcher = fetcher
         self.max_depth = max(0, max_depth)
         self.max_pages = max(1, max_pages)
         self.include_subdomains = include_subdomains
         self.concurrency = max(1, concurrency)
+        # ``page_fetch`` lets a headless renderer stand in for HTTP page fetches
+        # (same ``(final_url, content_type, text)`` contract). Its sync browser
+        # API is single-threaded, so such runs fetch pages with one worker.
+        self.page_fetch = page_fetch or fetcher.fetch_page
+        self.page_workers = page_workers if page_workers is not None else self.concurrency
 
     # ── reference extraction ────────────────────────────────────────────────
     def _collect_js_refs(self, base_url: str, text: str) -> set[str]:
         """Absolute .js URLs referenced anywhere in ``text``."""
         refs: set[str] = set()
         for m in _SCRIPT_SRC_RE.finditer(text):
-            refs.add(urljoin(base_url, m.group(1).strip()))
+            # html.unescape so '&amp;' in an href/src becomes a real '&'.
+            refs.add(urljoin(base_url, html.unescape(m.group(1).strip())))
         for m in _JS_REF_RE.finditer(text):
-            candidate = m.group(1).strip()
+            candidate = html.unescape(m.group(1).strip())
             # Skip protocol-relative/data noise handled by urljoin anyway.
             refs.add(urljoin(base_url, candidate))
         # Keep only real http(s) .js URLs.
@@ -122,7 +131,7 @@ class JSCrawler:
     def _collect_links(self, base_url: str, text: str) -> set[str]:
         links: set[str] = set()
         for m in _HREF_RE.finditer(text):
-            joined = urljoin(base_url, m.group(1).strip())
+            joined = urljoin(base_url, html.unescape(m.group(1).strip()))
             if joined.startswith(("http://", "https://")):
                 links.add(joined.split("#", 1)[0])
         return links
@@ -185,8 +194,16 @@ class JSCrawler:
 
             logger.info(f"Crawl depth {depth}: fetching {len(batch)} page(s)...")
             next_frontier: set[str] = set()
-            with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-                for page_url, content_type, text in pool.map(self.fetcher.fetch_page, batch):
+            # A single worker runs in THIS thread (no pool): the headless-browser
+            # page fetcher is bound to the thread that started it and cannot be
+            # driven from a pool worker. Multiple workers use a thread pool.
+            if self.page_workers <= 1:
+                fetched = (self.page_fetch(u) for u in batch)
+            else:
+                pool = ThreadPoolExecutor(max_workers=self.page_workers)
+                fetched = pool.map(self.page_fetch, batch)
+            try:
+                for page_url, content_type, text in fetched:
                     if not text:
                         continue
                     result.pages_crawled += 1
@@ -207,6 +224,9 @@ class JSCrawler:
                                 if _in_scope(link, scope_hosts, self.include_subdomains):
                                     next_frontier.add(link)
                                     result.parameters |= self._collect_params(link)
+            finally:
+                if self.page_workers > 1:
+                    pool.shutdown(wait=True)
 
             frontier = [u for u in next_frontier if u not in visited]
             depth += 1
@@ -236,6 +256,62 @@ class JSCrawler:
                 out.append(url)
         logger.info(f"Wayback: {len(out)} historic .js URL(s) for {domain}.")
         return out
+
+
+    # ── robots.txt / sitemap.xml (extra seeds) ──────────────────────────────
+    def site_seeds(self, base_url: str, scope_hosts: set[str], max_urls: int = 500) -> list[str]:
+        """Extra in-scope page URLs pulled from robots.txt and sitemap.xml.
+
+        These surface pages that aren't linked from the homepage (dashboards,
+        API consoles, old sections) — often where the interesting JS lives.
+        Always fetched over plain HTTP (never the renderer). Best-effort.
+        """
+        origin = "{0.scheme}://{0.netloc}".format(urlsplit(base_url))
+        found: list[str] = []
+        seen: set[str] = set()
+
+        def _add(url: str) -> None:
+            url = url.strip()
+            if (
+                url.startswith(("http://", "https://"))
+                and url not in seen
+                and _in_scope(url, scope_hosts, self.include_subdomains)
+            ):
+                seen.add(url)
+                found.append(url)
+
+        # robots.txt: mine Sitemap: directives and Allow/Disallow paths.
+        sitemaps: list[str] = [origin + "/sitemap.xml"]
+        _, _, robots = self.fetcher.fetch_page(origin + "/robots.txt")
+        for line in (robots or "").splitlines():
+            low = line.strip().lower()
+            if low.startswith("sitemap:"):
+                sitemaps.append(line.split(":", 1)[1].strip())
+            elif low.startswith(("allow:", "disallow:")):
+                path = line.split(":", 1)[1].strip()
+                if path and path != "/" and "*" not in path:
+                    _add(urljoin(origin + "/", path.lstrip("/")))
+
+        # sitemap.xml (and any nested sitemaps): pull <loc> URLs.
+        for sm in dict.fromkeys(sitemaps):
+            if len(found) >= max_urls:
+                break
+            _, _, xml = self.fetcher.fetch_page(sm)
+            for m in re.finditer(r"<loc>\s*([^<\s]+)\s*</loc>", xml or "", re.IGNORECASE):
+                loc = m.group(1)
+                if loc.lower().endswith(".xml"):
+                    # Nested sitemap index — fetch one level deep.
+                    _, _, nested = self.fetcher.fetch_page(loc)
+                    for mm in re.finditer(r"<loc>\s*([^<\s]+)\s*</loc>", nested or "", re.IGNORECASE):
+                        _add(mm.group(1))
+                else:
+                    _add(loc)
+                if len(found) >= max_urls:
+                    break
+
+        if found:
+            logger.info(f"robots/sitemap surfaced {len(found)} extra in-scope URL(s).")
+        return found[:max_urls]
 
 
 def build_seeds(domain: str | None, urls: list[str]) -> tuple[list[str], set[str]]:
