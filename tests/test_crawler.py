@@ -44,6 +44,45 @@ def test_collect_js_refs_finds_script_src_and_bare_refs():
     assert all(".json" not in r for r in refs)
 
 
+def test_collect_js_refs_ignores_template_literals_and_analytics():
+    crawler = JSCrawler(_FakeFetcher({}))
+    html = (
+        '<script src="https://www.googletagmanager.com/gtm.js?id=GTM-XXaa"></script>'
+        '<script src="/js/gtm.js"></script>'                      # bare GTM loader
+        'var u = "https://cdn.example.com/app.js?id=${gtmId}";'   # template literal
+        '<script src="/js/real.js"></script>'
+    )
+    refs = crawler._collect_js_refs("https://example.com/", html)
+    # Only the genuine app script survives.
+    assert refs == {"https://example.com/js/real.js"}
+    assert all("gtm.js" not in r for r in refs)
+    assert all("${" not in r for r in refs)
+
+
+def test_discover_skips_out_of_scope_redirect_target():
+    # An in-scope link whose fetch redirects out of scope must not be harvested.
+    pages = {
+        "https://example.com": (
+            "https://example.com",
+            "text/html",
+            '<a href="/edit">edit</a>',
+        ),
+        # The crawler requests the in-scope /edit URL, but the fetcher reports a
+        # final URL on github.com (a redirect) with its own inline script.
+        "https://example.com/edit": (
+            "https://github.com/login",
+            "text/html",
+            "<script>var leaked = 1234567890;" + "x" * 60 + "</script>",
+        ),
+    }
+    fetcher = _FakeFetcher(pages)
+    crawler = JSCrawler(fetcher, max_depth=1, concurrency=1)
+    result = crawler.discover(["https://example.com"], {"example.com"})
+    # The out-of-scope redirect page contributed nothing.
+    assert all("github.com" not in label for label in result.inline_scripts)
+    assert result.pages_crawled == 1  # only the in-scope seed counted
+
+
 def test_collect_js_refs_decodes_html_entities():
     crawler = JSCrawler(_FakeFetcher({}))
     html = '<script src="https://cdn.example.com/main.js?a=1&amp;b=2"></script>'

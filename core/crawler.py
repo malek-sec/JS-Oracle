@@ -36,8 +36,11 @@ _INLINE_SCRIPT_RE = re.compile(
 
 # Any quoted/parenthesised reference ending in .js (optionally with a query).
 # Requiring a delimiter right after the extension keeps '.json'/'.jsx' out.
+# The character class also excludes backticks, braces and brackets so a JS
+# template literal (e.g. `.../gtm.js?id=${gtmId}`) or a markdown link can't be
+# captured as a (malformed) URL.
 _JS_REF_RE = re.compile(
-    r"""["'(]\s*([^"'()\s<>]+?\.js(?:\?[^"'()\s<>]*)?)\s*["')]""",
+    r"""["'(]\s*([^"'()\s<>`{}\[\]]+?\.js(?:\?[^"'()\s<>`{}\[\]]*)?)\s*["')]""",
     re.IGNORECASE,
 )
 
@@ -92,6 +95,20 @@ def _looks_like_js(url: str) -> bool:
     return path.lower().endswith(".js")
 
 
+# Third-party analytics loaders that are never the target's own code and whose
+# dynamically-built references produce false positives (e.g. a bare "gtm.js"
+# resolved against every crawled path). Matched on host or filename.
+_ANALYTICS_HOSTS = ("googletagmanager.com", "google-analytics.com")
+
+
+def _is_analytics_noise(url: str) -> bool:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if any(host == h or host.endswith("." + h) for h in _ANALYTICS_HOSTS):
+        return True
+    return parts.path.rsplit("/", 1)[-1].lower() == "gtm.js"
+
+
 class JSCrawler:
     def __init__(
         self,
@@ -118,15 +135,29 @@ class JSCrawler:
     def _collect_js_refs(self, base_url: str, text: str) -> set[str]:
         """Absolute .js URLs referenced anywhere in ``text``."""
         refs: set[str] = set()
+
+        def _add(raw: str) -> None:
+            candidate = html.unescape(raw.strip())
+            # Drop template-literal fragments and other non-literal noise that a
+            # regex can still catch (e.g. ".../gtm.js?id=${gtmId}").
+            if "${" in candidate or "`" in candidate:
+                return
+            refs.add(urljoin(base_url, candidate))
+
         for m in _SCRIPT_SRC_RE.finditer(text):
             # html.unescape so '&amp;' in an href/src becomes a real '&'.
-            refs.add(urljoin(base_url, html.unescape(m.group(1).strip())))
+            _add(m.group(1))
         for m in _JS_REF_RE.finditer(text):
-            candidate = html.unescape(m.group(1).strip())
-            # Skip protocol-relative/data noise handled by urljoin anyway.
-            refs.add(urljoin(base_url, candidate))
-        # Keep only real http(s) .js URLs.
-        return {r for r in refs if r.startswith(("http://", "https://")) and _looks_like_js(r)}
+            _add(m.group(1))
+        # Keep only real http(s) .js URLs, dropping the ubiquitous Google Tag
+        # Manager loader — it is third-party analytics noise, never target code,
+        # and its dynamic references otherwise resolve against every crawled path.
+        return {
+            r for r in refs
+            if r.startswith(("http://", "https://"))
+            and _looks_like_js(r)
+            and not _is_analytics_noise(r)
+        }
 
     def _collect_links(self, base_url: str, text: str) -> set[str]:
         links: set[str] = set()
@@ -205,6 +236,12 @@ class JSCrawler:
             try:
                 for page_url, content_type, text in fetched:
                     if not text:
+                        continue
+                    # A fetch can follow a redirect out of scope (e.g. an
+                    # in-scope "edit this page" link -> github.com/login). Never
+                    # harvest a page whose final URL left the target scope.
+                    if not _in_scope(page_url, scope_hosts, self.include_subdomains):
+                        logger.debug(f"Skipping out-of-scope redirect target: {page_url}")
                         continue
                     result.pages_crawled += 1
                     result.parameters |= self._collect_params(page_url)
